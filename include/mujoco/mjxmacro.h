@@ -185,6 +185,8 @@
     X( nflexedge )          \
     X( nflexelem )          \
     X( nflexelemdata )      \
+    X( nflexstiffness )     \
+    X( nflexbending )       \
     X( nflexelemedge )      \
     X( nflexshelldata )     \
     X( nflexevpair )        \
@@ -453,6 +455,7 @@
     X   ( int,     flex_matid,            nflex,         1                    ) \
     X   ( int,     flex_group,            nflex,         1                    ) \
     X   ( int,     flex_interp,           nflex,         1                    ) \
+    X   ( int,     flex_cellnum,          nflex,         3                    ) \
     X   ( int,     flex_nodeadr,          nflex,         1                    ) \
     X   ( int,     flex_nodenum,          nflex,         1                    ) \
     X   ( int,     flex_vertadr,          nflex,         1                    ) \
@@ -462,7 +465,9 @@
     X   ( int,     flex_elemadr,          nflex,         1                    ) \
     X   ( int,     flex_elemnum,          nflex,         1                    ) \
     X   ( int,     flex_elemdataadr,      nflex,         1                    ) \
+    X   ( int,     flex_stiffnessadr,     nflex,         1                    ) \
     X   ( int,     flex_elemedgeadr,      nflex,         1                    ) \
+    X   ( int,     flex_bendingadr,       nflex,         1                    ) \
     X   ( int,     flex_shellnum,         nflex,         1                    ) \
     X   ( int,     flex_shelldataadr,     nflex,         1                    ) \
     X   ( int,     flex_evpairadr,        nflex,         1                    ) \
@@ -490,8 +495,8 @@
     X   ( mjtNum,  flexedge_invweight0,   nflexedge,     1                    ) \
     X   ( mjtNum,  flex_radius,           nflex,         1                    ) \
     X   ( mjtNum,  flex_size,             nflex,         3                    ) \
-    X   ( mjtNum,  flex_stiffness,        nflexelem,     21                   ) \
-    X   ( mjtNum,  flex_bending,          nflexedge,     17                   ) \
+    X   ( mjtNum,  flex_stiffness,        nflexstiffness, 1                   ) \
+    X   ( mjtNum,  flex_bending,          nflexbending,  1                    ) \
     X   ( mjtNum,  flex_damping,          nflex,         1                    ) \
     X   ( mjtNum,  flex_edgestiffness,    nflex,         1                    ) \
     X   ( mjtNum,  flex_edgedamping,      nflex,         1                    ) \
@@ -941,6 +946,10 @@
 
 // array fields of mjData that are used in the dual problem
 #define MJDATA_ARENA_POINTERS_DUAL                       \
+    XNV( int,      efc_Y_rownnz,      MJ_D(nefc),    1 ) \
+    XNV( int,      efc_Y_rowadr,      MJ_D(nefc),    1 ) \
+    XNV( int,      efc_Y_colind,      MJ_D(nY),      1 ) \
+    XNV( mjtNum,   efc_Y,             MJ_D(nY),      1 ) \
     XNV( int,      efc_AR_rownnz,     MJ_D(nefc),    1 ) \
     XNV( int,      efc_AR_rowadr,     MJ_D(nefc),    1 ) \
     XNV( int,      efc_AR_colind,     MJ_D(nA),      1 ) \
@@ -1015,6 +1024,7 @@
     X( int,       nl                 ) \
     X( int,       nefc               ) \
     X( int,       nJ                 ) \
+    X( int,       nY                 ) \
     X( int,       nA                 ) \
     X( int,       nisland            ) \
     X( int,       nidof              ) \
