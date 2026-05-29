@@ -6455,14 +6455,23 @@ struct MjData {
   void set_parena(size_t value) {
     ptr_->parena = value;
   }
+  uintptr_t threadpool() const {
+    return ptr_->threadpool;
+  }
+  void set_threadpool(uintptr_t value) {
+    ptr_->threadpool = value;
+  }
+  mjtBool threadlock() const {
+    return ptr_->threadlock;
+  }
+  void set_threadlock(mjtBool value) {
+    ptr_->threadlock = value;
+  }
   int maxuse_stack() const {
     return static_cast<int>(ptr_->maxuse_stack);
   }
   void set_maxuse_stack(int value) {
     ptr_->maxuse_stack = static_cast<mjtSize>(value);
-  }
-  emscripten::val maxuse_threadstack() const {
-    return emscripten::val(emscripten::typed_memory_view(128, ptr_->maxuse_threadstack));
   }
   int maxuse_arena() const {
     return static_cast<int>(ptr_->maxuse_arena);
@@ -7094,12 +7103,6 @@ struct MjData {
   }
   emscripten::val ifrc_constraint() const {
     return emscripten::val(emscripten::typed_memory_view(ptr_->nidof, ptr_->ifrc_constraint));
-  }
-  uintptr_t threadpool() const {
-    return ptr_->threadpool;
-  }
-  void set_threadpool(uintptr_t value) {
-    ptr_->threadpool = value;
   }
   uint64_t signature() const {
     return ptr_->signature;
@@ -9952,6 +9955,22 @@ int mjs_isWarning_wrapper(MjSpec& s) {
   return mjs_isWarning(s.get());
 }
 
+std::optional<MjsFlex> mjs_makeFlex_wrapper(MjsBody& body, const String& name, const StringOrNull& type, int dim, const StringOrNull& dof, const NumberArray& count, const NumberArray& cellcount, const NumberArray& spacing, const NumberArray& scale, double radius, double mass, double inertiabox, int equality, int rigid, int flatskin, int elastic2d, const NumberArray& pos, const NumberArray& quat, const NumberArray& origin, const StringOrNull& file, const MjVFS& vfs) {
+  CHECK_VAL(name);
+  UNPACK_NULLABLE_ARRAY(int, count);
+  UNPACK_NULLABLE_ARRAY(int, cellcount);
+  UNPACK_NULLABLE_ARRAY(double, spacing);
+  UNPACK_NULLABLE_ARRAY(double, scale);
+  UNPACK_NULLABLE_ARRAY(double, pos);
+  UNPACK_NULLABLE_ARRAY(double, quat);
+  UNPACK_NULLABLE_ARRAY(double, origin);
+  mjsFlex* result = mjs_makeFlex(body.get(), name.as<const std::string>().data(), type.as<const std::string>().data(), dim, dof.as<const std::string>().data(), count_.data(), cellcount_.data(), spacing_.data(), scale_.data(), radius, mass, inertiabox, equality, rigid, flatskin, elastic2d, pos_.data(), quat_.data(), origin_.data(), file.as<const std::string>().data(), vfs.get());
+  if (result == nullptr) {
+    return std::nullopt;
+  }
+  return MjsFlex(result);
+}
+
 int mjs_makeMesh_wrapper(MjsMesh& mesh, mjtMeshBuiltin builtin, const val& params, int nparams) {
   UNPACK_VALUE(double, params);
   return mjs_makeMesh(mesh.get(), builtin, params_.data(), nparams);
@@ -10750,6 +10769,10 @@ void mju_symmetrize_wrapper(const val& res, const NumberArray& mat, int n) {
   mju_symmetrize(res_.data(), mat_.data(), n);
 }
 
+void mju_threadpool_wrapper(MjData& d, int nthread) {
+  mju_threadpool(d.get(), nthread);
+}
+
 void mju_transformSpatial_wrapper(const val& res, const NumberArray& vec, int flg_force, const NumberArray& newpos, const NumberArray& oldpos, const NumberArray& rotnew2old) {
   UNPACK_VALUE(mjtNum, res);
   UNPACK_ARRAY(mjtNum, vec);
@@ -11451,10 +11474,6 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .value("mjSTEREO_NONE", mjSTEREO_NONE)
     .value("mjSTEREO_QUADBUFFERED", mjSTEREO_QUADBUFFERED)
     .value("mjSTEREO_SIDEBYSIDE", mjSTEREO_SIDEBYSIDE);
-  enum_<mjtTaskStatus>("mjtTaskStatus")
-    .value("mjTASK_NEW", mjTASK_NEW)
-    .value("mjTASK_QUEUED", mjTASK_QUEUED)
-    .value("mjTASK_COMPLETED", mjTASK_COMPLETED);
   enum_<mjtTexture>("mjtTexture")
     .value("mjTEXTURE_2D", mjTEXTURE_2D)
     .value("mjTEXTURE_CUBE", mjTEXTURE_CUBE)
@@ -11718,7 +11737,6 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("maxuse_con", &MjData::maxuse_con, &MjData::set_maxuse_con, reference())
     .property("maxuse_efc", &MjData::maxuse_efc, &MjData::set_maxuse_efc, reference())
     .property("maxuse_stack", &MjData::maxuse_stack, &MjData::set_maxuse_stack, reference())
-    .property("maxuse_threadstack", &MjData::maxuse_threadstack)
     .property("mocap_pos", &MjData::mocap_pos)
     .property("mocap_quat", &MjData::mocap_quat)
     .property("moment_colind", &MjData::moment_colind)
@@ -11788,6 +11806,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("ten_wrapadr", &MjData::ten_wrapadr)
     .property("ten_wrapnum", &MjData::ten_wrapnum)
     .property("tendon_efcadr", &MjData::tendon_efcadr)
+    .property("threadlock", &MjData::threadlock, &MjData::set_threadlock, reference())
     .property("threadpool", &MjData::threadpool, &MjData::set_threadpool, reference())
     .property("time", &MjData::time, &MjData::set_time, reference())
     .property("timer", &MjData::timer, reference())
@@ -13474,6 +13493,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
   function("mjs_getWrapSideSite", &mjs_getWrapSideSite_wrapper);
   function("mjs_getWrapTarget", &mjs_getWrapTarget_wrapper);
   function("mjs_isWarning", &mjs_isWarning_wrapper);
+  function("mjs_makeFlex", &mjs_makeFlex_wrapper);
   function("mjs_makeMesh", &mjs_makeMesh_wrapper);
   function("mjs_nextChild", &mjs_nextChild_wrapper);
   function("mjs_nextElement", &mjs_nextElement_wrapper);
@@ -13593,6 +13613,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
   function("mju_sum", &mju_sum_wrapper);
   function("mju_sym2dense", &mju_sym2dense_wrapper);
   function("mju_symmetrize", &mju_symmetrize_wrapper);
+  function("mju_threadpool", &mju_threadpool_wrapper);
   function("mju_transformSpatial", &mju_transformSpatial_wrapper);
   function("mju_transpose", &mju_transpose_wrapper);
   function("mju_trnVecPose", &mju_trnVecPose_wrapper);
