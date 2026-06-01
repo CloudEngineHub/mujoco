@@ -7,6 +7,9 @@ Upcoming version (not yet released)
 
 General
 ^^^^^^^
+- Improved primal solver convergence under float32. Improvements initially proposed by :github:user:`n3b` in
+  :issue:`2313` and :github:user:`denzeler-nvidia` in :doc:`MJWarp <mjwarp/index>` pull request
+  `1374 <https://github.com/google-deepmind/mujoco_warp/pull/1374>`__.
 - Added :ref:`mjs_makeFlex`, a new C API function equivalent to the :ref:`flexcomp<body-flexcomp>` element for
   programmatically creating flex objects with auto-generated bodies, joints, and equality constraints. Exposed as
   ``body.make_flex()`` in Python.
@@ -17,13 +20,17 @@ General
   .. admonition:: Breaking API changes
      :class: attention
 
-     - The header file ``mjthread.h`` was removed along with the engine threading API.
+     - The header file ``mjthread.h`` was removed along with the old engine threading API.
 
        **Migration:** Use :ref:`mju_threadpool` to set number of worker threads for the engine.
 
      - Moved island sparse matrix construction from :ref:`mj_island` (single threaded) into :ref:`mj_fwdConstraint`
        (multi-threaded). The island-specific matrices ``iM, iLD, iefc_J`` were removed from the arena and are now
        allocated on the stack.
+
+     - Following the introduction of the :ref:`diagexact<option-flag-diagexact>` flag, the ``mjData`` field
+       ``efc_diagApprox`` was renamed to ``efc_diagA``, as it can now be either the exact or approximate diagonal of
+       the :math:`A` ("Delassus") matrix.
 
 Bug fixes
 ^^^^^^^^^
