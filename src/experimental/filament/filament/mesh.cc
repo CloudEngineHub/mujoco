@@ -102,7 +102,7 @@ int FillSequence(std::byte* buffer, std::size_t num_bytes) {
   return num;
 }
 
-Mesh::Mesh(filament::Engine* engine, const mjrMeshData& data)
+Mesh::Mesh(filament::Engine* engine, const mjrfMeshData& data)
     : engine_(engine), shared_state_(std::make_shared<SharedState>()) {
   type_ = data.primitive_type == mjMESH_PRIMITIVE_TYPE_TRIANGLES
               ? filament::RenderableManager::PrimitiveType::TRIANGLES
@@ -110,9 +110,9 @@ Mesh::Mesh(filament::Engine* engine, const mjrMeshData& data)
 
   // If the user has provided a release callback, then we need to ensure we
   // call is when filament is done with the mesh data.
-  if (data.release_callback) {
+  if (data.release) {
     shared_state_->callbacks.push_back([=]() {
-      data.release_callback(data.user_data);
+      data.release(data.user_data);
     });
   }
 
@@ -131,9 +131,9 @@ Mesh::~Mesh() {
   }
 }
 
-void Mesh::BuildVertexBuffer(const mjrMeshData& data) {
+void Mesh::BuildVertexBuffer(const mjrfMeshData& data) {
   if (data.nvertices == 0) {
-    mju_error("mjrMeshData has no vertices.");
+    mju_error("mjrfMeshData has no vertices.");
   }
 
   // The filament BufferDescriptor callback for releasing the memory.
@@ -168,13 +168,13 @@ void Mesh::BuildVertexBuffer(const mjrMeshData& data) {
     }
   }
   if (!positions) {
-    mju_error("mjrMeshData has no positions.");
+    mju_error("mjrfMeshData has no positions.");
   }
   if (data.attributes[0].usage != mjVERTEX_ATTRIBUTE_USAGE_POSITION) {
     mju_error("Positions must be the first attribute.");
   }
   if (normals && tangents) {
-    mju_error("mjrMeshData has both normals and tangents.");
+    mju_error("mjrfMeshData has both normals and tangents.");
   }
   if (normals && data.interleaved) {
     // We need to build orientations from normals and so we require each
@@ -253,7 +253,7 @@ void Mesh::BuildVertexBuffer(const mjrMeshData& data) {
   }
 }
 
-void Mesh::BuildIndexBuffer(const mjrMeshData& data) {
+void Mesh::BuildIndexBuffer(const mjrfMeshData& data) {
   if (data.nindices == 0) {
     return;
   }
@@ -306,7 +306,7 @@ float4* Mesh::BuildOrientationsFromNormals(int nvertices,
   return orientations;
 }
 
-void Mesh::UpdateBounds(const mjrMeshData& data) {
+void Mesh::UpdateBounds(const mjrfMeshData& data) {
   float3 bounds_min = ReadFloat3(data.bounds_min);
   float3 bounds_max = ReadFloat3(data.bounds_max);
   if (bounds_min != bounds_max) {
@@ -316,7 +316,7 @@ void Mesh::UpdateBounds(const mjrMeshData& data) {
     bounds_max = float3(-FLT_MAX, -FLT_MAX, -FLT_MAX);
 
     if (data.attributes[0].usage != mjVERTEX_ATTRIBUTE_USAGE_POSITION) {
-      mju_error("mjrMeshData has no positions.");
+      mju_error("mjrfMeshData has no positions.");
     }
     const float* positions =
         reinterpret_cast<const float*>(data.attributes[0].bytes);

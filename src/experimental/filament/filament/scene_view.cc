@@ -120,7 +120,7 @@ static void SetupReflectionCamera(const mat4& surface_xform,
   reflection_camera->setCustomProjection(oblique, near, far);
 }
 
-SceneView::SceneView(filament::Engine* engine, const mjrSceneParams& params)
+SceneView::SceneView(filament::Engine* engine, const mjrfSceneParams& params)
     : engine_(engine) {
   reflection_mgr_ = std::make_unique<ReflectionManager>(engine_);
 
@@ -131,12 +131,12 @@ SceneView::SceneView(filament::Engine* engine, const mjrSceneParams& params)
   main_view_ = engine->createView();
   main_view_->setScene(scene_);
   main_view_->setCamera(camera_);
-  main_view_->setVisibleLayers(0xff, params.layer_mask);
+  main_view_->setVisibleLayers(0xff, kLayerMask_All);
 
   depth_segment_view_ = engine->createView();
   depth_segment_view_->setScene(scene_);
   depth_segment_view_->setCamera(camera_);
-  depth_segment_view_->setVisibleLayers(0xff, params.layer_mask);
+  depth_segment_view_->setVisibleLayers(0xff, kLayerMask_Object);
   depth_segment_view_->setPostProcessingEnabled(false);
 
   reflect_view_ = engine->createView();
@@ -145,7 +145,7 @@ SceneView::SceneView(filament::Engine* engine, const mjrSceneParams& params)
   reflect_view_->setShadowingEnabled(false);
   reflect_view_->setPostProcessingEnabled(false);
   reflect_view_->setFrontFaceWindingInverted(true);
-  reflect_view_->setVisibleLayers(0xff, params.reflection_layer_mask);
+  reflect_view_->setVisibleLayers(0xff, kLayerMask_Object);
   reflect_view_->setMultiSampleAntiAliasingOptions({.enabled = false});
 
   // Rotate the fog to align with mujoco's +Z up space.
@@ -218,8 +218,8 @@ void SceneView::SetSkybox(const Texture* skybox_texture) {
   }
 }
 
-void SceneView::PrepareToRender(std::span<const mjrRenderRequest*> requests) {
-  for (const mjrRenderRequest* request : requests) {
+void SceneView::PrepareToRender(std::span<const mjrfRenderRequest*> requests) {
+  for (const mjrfRenderRequest* request : requests) {
     if (request->scene != this) {
       mju_error("Invalid scene for SceneView::PrepareToRender.");
     }
@@ -231,7 +231,7 @@ void SceneView::PrepareToRender(std::span<const mjrRenderRequest*> requests) {
   }
 }
 
-void SceneView::Render(filament::Renderer* renderer, const mjrRenderRequest& request) {
+void SceneView::Render(filament::Renderer* renderer, const mjrfRenderRequest& request) {
   if (request.scene != this) {
     mju_error("Invalid scene for SceneView::Render.");
   }
@@ -270,7 +270,7 @@ void SceneView::Render(filament::Renderer* renderer, const mjrRenderRequest& req
     SetupReflectionCamera(transform, camera_, reflect_camera_);
 
     // Hide reflective surface from its own reflection pass.
-    std::uint8_t previous_layer_mask = renderable->SetLayerMask(0x00);
+    std::uint8_t prev_layer_mask = renderable->SetLayerMask(kLayerMask_None);
 
     // Render the reflection to its render target.
     viewport.left = 0;
@@ -282,7 +282,7 @@ void SceneView::Render(filament::Renderer* renderer, const mjrRenderRequest& req
     reflect_view_->setRenderTarget(nullptr);
 
     // Unhide the reflective surface.
-    renderable->SetLayerMask(previous_layer_mask);
+    renderable->SetLayerMask(prev_layer_mask);
   }
 
   view->setRenderTarget(render_target ? render_target->GetFilamentRenderTarget()

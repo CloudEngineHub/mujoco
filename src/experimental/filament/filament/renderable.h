@@ -35,14 +35,21 @@
 
 namespace mujoco {
 
+enum LayerMask : uint8_t {
+  kLayerMask_Object  = 0x01 << 1,
+  kLayerMask_Decor   = 0x01 << 2,
+  kLayerMask_All     = 0xff,
+  kLayerMask_None    = 0x00,
+};
+
 // A Renderable is effectively two things: a mesh and a material.
 //
 // The mesh describes the surface geometry of the object and the material
 // describes how that surface interacts with light (i.e. the color of each point
 // on the surface).
-class Renderable : public mjrRenderable {
+class Renderable : public mjrfRenderable {
  public:
-  Renderable(filament::Engine* engine, const mjrRenderableParams& params,
+  Renderable(filament::Engine* engine, const mjrfRenderableParams& params,
              MaterialManager* material_mgr);
   ~Renderable() noexcept;
 
@@ -73,10 +80,6 @@ class Renderable : public mjrRenderable {
   // show/hide groups of renderables in scenes. Returns the previous layer mask.
   std::uint8_t SetLayerMask(std::uint8_t mask);
 
-  // Sets the draw priority this renderable. The priority determines the order
-  // in which renderables are rendered. Returns the previous priority.
-  std::uint8_t SetPriority(std::uint8_t priority);
-
   // Sets the blend order for this renderable. This determines the order in
   // which transparent renderables are blended together. Returns the previous
   // blend order.
@@ -98,22 +101,22 @@ class Renderable : public mjrRenderable {
   void RemoveFromScene(filament::Scene* scene);
 
   // Updates the parameters and textures of the material for this renderable.
-  void UpdateMaterial(const mjrMaterial& material);
+  void UpdateMaterial(const mjrfMaterial& material);
 
   // Returns this renderable's current material.
-  const mjrMaterial& GetMaterial() const;
+  const mjrfMaterial& GetMaterial() const;
 
   // Prepares the material instances for the given render requests.
-  void Prepare(std::span<const mjrRenderRequest*> requests,
+  void Prepare(std::span<const mjrfRenderRequest*> requests,
                ReflectionManager* reflection_mgr);
 
   // Binds the material instance for the given render request.
-  void BindMaterialInstance(const mjrRenderRequest& request);
+  void BindMaterialInstance(const mjrfRenderRequest& request);
 
-  static Renderable* downcast(mjrRenderable* renderable) {
+  static Renderable* downcast(mjrfRenderable* renderable) {
     return static_cast<Renderable*>(renderable);
   }
-  static const Renderable* downcast(const mjrRenderable* renderable) {
+  static const Renderable* downcast(const mjrfRenderable* renderable) {
     return static_cast<const Renderable*>(renderable);
   }
 
@@ -163,9 +166,9 @@ class Renderable : public mjrRenderable {
   filament::Engine* GetEngine();
 
   MaterialManager* material_mgr_;
-  mjrRenderableParams params_;
+  mjrfRenderableParams params_;
   mjtGeom geom_type_ = mjGEOM_NONE;
-  mjrMaterial material_;
+  mjrfMaterial material_;
   std::deque<DrawState> draw_queue_;
   DrawState curr_state_;
   filament::Scene* assigned_scene_ = nullptr;
@@ -173,6 +176,7 @@ class Renderable : public mjrRenderable {
   filament::math::mat4f transform_;
   GetTransformFn get_transform_fn_;
   Trs trs_;
+  uint8_t layer_mask_ = 0x00;
   bool infinite_plane_ = false;
 };
 
