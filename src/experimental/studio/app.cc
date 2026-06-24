@@ -95,8 +95,19 @@ App::App(Config config)
   mjv_defaultPerturb(&perturb_);
   mjv_defaultCamera(&camera_);
   mjv_defaultOption(&vis_options_);
+  std::memset(&plugin_scene_, 0, sizeof(mjvScene));
+  mjv_makeScene(nullptr, &plugin_scene_, 2000);
 
   profiler_.Clear();
+
+  step_control_.SetPreStepCallback(
+      [this](const mjModel* m, mjData* d) { PreStep(m, d); });
+  step_control_.SetPostStepCallback(
+      [this](const mjModel* m, mjData* d) { PostStep(m, d); });
+}
+
+App::~App() {
+  mjv_freeScene(&plugin_scene_);
 }
 
 void App::SwitchGraphicsMode(int width, int height,
@@ -329,6 +340,22 @@ void App::UpdatePhysics() {
   }
 }
 
+void App::PreStep(const mjModel* m, mjData* d) {
+  platform::ForEachPlugin<platform::ModelPlugin>([&](auto* plugin) {
+    if (plugin->pre_step) {
+      plugin->pre_step(plugin, m, d);
+    }
+  });
+}
+
+void App::PostStep(const mjModel* m, mjData* d) {
+  platform::ForEachPlugin<platform::ModelPlugin>([&](auto* plugin) {
+    if (plugin->post_step) {
+      plugin->post_step(plugin, m, d);
+    }
+  });
+}
+
 void App::LoadHistory(int offset) {
   std::span<mjtNum> state = sim_history_.SetIndex(offset);
   if (!state.empty()) {
@@ -368,8 +395,17 @@ void App::Render() {
   } else {
     pixels_.clear();
   }
+
+  plugin_scene_.ngeom = 0;
+  platform::ForEachPlugin<platform::ScenePlugin>([&](auto* plugin) {
+    if (plugin->enhance_scene) {
+      plugin->enhance_scene(plugin, model(), data(), &plugin_scene_);
+    }
+  });
+
   renderer_->Render(model(), data(), &perturb_, &camera_, &vis_options_,
-                    width * scale, height * scale, pixels_);
+                    width * scale, height * scale, pixels_,
+                    {plugin_scene_.geoms, (size_t)plugin_scene_.ngeom});
 
   window_->EndFrame();
   window_->Present(pixels_);
@@ -421,7 +457,9 @@ void App::ProcessPendingLoads() {
       const char* buf = plugin->get_model_to_load(
           plugin, &size, content_type, sizeof(content_type), model_name,
           sizeof(model_name));
-      if (buf && size) {
+      if (buf && buf == model_name) {
+        LoadModelFromFile(model_name);
+      } else if (buf && size) {
         const std::byte* bytes = reinterpret_cast<const std::byte*>(buf);
         LoadModelFromBuffer({bytes, bytes + size}, content_type, model_name);
       }
