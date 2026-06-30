@@ -10,6 +10,13 @@ General
 - Added Nesterov momentum extrapolation with adaptive gradient restart (O'Donoghue-Candès) to the PGS solver,
   significantly improving convergence. Overall PGS now requires ~2x fewer iterations.
 
+* :ref:`mj_encode` now supports encoding of MJB and TXT files.
+
+.. admonition:: Breaking API changes
+   :class: attention
+
+   - Return type of :ref:`mj_encode` and the :ref:`mjfEncode` callback changed from ``int`` to ``mjtSize`` (64-bit).
+
 Version 3.10.0 (June 22, 2026)
 ------------------------------
 
