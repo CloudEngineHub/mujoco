@@ -9,8 +9,12 @@ General
 ^^^^^^^
 - Added Nesterov momentum extrapolation with adaptive gradient restart (O'Donoghue-Candès) to the PGS solver,
   significantly improving convergence. Overall PGS now requires ~2x fewer iterations.
-
-* :ref:`mj_encode` now supports encoding of MJB and TXT files.
+- :ref:`mj_encode` now supports encoding of MJB and TXT files.
+- :ref:`mj_setConst` now recomputes the ``mjModel.{body,geom,site}_sameframe`` flags, to account for changes in
+  body/geom/site frames after compilation.
+- The :el:`attach` element now supports self-attachment (attaching elements of the current model to itself) by omitting
+  the :at:`model` attribute. It also supports attaching a frame via the new :at:`frame` attribute, which is mutually
+  exclusive with :at:`body`.
 
 .. admonition:: Breaking API changes
    :class: attention
