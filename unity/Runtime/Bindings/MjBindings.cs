@@ -1105,7 +1105,6 @@ public unsafe struct mjModel_ {
   public UInt64 nnames_map;
   public UInt64 nJmom;
   public UInt64 ngravcomp;
-  public UInt64 nsurfacevel;
   public UInt64 nemax;
   public UInt64 njmax;
   public UInt64 nconmax;
@@ -1117,6 +1116,8 @@ public unsafe struct mjModel_ {
   public UInt64 nhistory;
   public UInt64 narena;
   public UInt64 nbuffer;
+  public byte flg_gravcomp;
+  public byte flg_surfacevel;
   public mjOption_ opt;
   public mjVisual_ vis;
   public mjStatistic_ stat;
@@ -5974,6 +5975,8 @@ public unsafe struct mjvGeom_ {
   public int objid;
   public int category;
   public int matid;
+  public int texid;
+  public int texuniform;
   public int texcoord;
   public int segid;
   public fixed float size[3];
@@ -5984,6 +5987,7 @@ public unsafe struct mjvGeom_ {
   public float specular;
   public float shininess;
   public float reflectance;
+  public fixed float texrepeat[2];
   public fixed char label[100];
   public float camdist;
   public float modelrbound;

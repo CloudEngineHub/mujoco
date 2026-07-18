@@ -661,7 +661,6 @@ typedef struct mjModel_ {
   mjtSize nnames_map;             // number of slots in the names hash map
   mjtSize nJmom;                  // number of non-zeros in sparse actuator_moment matrix
   mjtSize ngravcomp;              // number of bodies with nonzero gravcomp
-  mjtSize nsurfacevel;            // number of geoms with nonzero surfacevel
   mjtSize nemax;                  // number of potential equality-constraint rows
   mjtSize njmax;                  // number of available rows in constraint Jacobian (legacy)
   mjtSize nconmax;                // number of potential contacts in contact list (legacy)
@@ -675,6 +674,11 @@ typedef struct mjModel_ {
   // buffer sizes
   mjtSize narena;                 // number of bytes in the mjData arena (inclusive of stack)
   mjtSize nbuffer;                // number of bytes in buffer
+
+  // ------------------------------- flags
+
+  mjtBool flg_gravcomp;           // whether any body has nonzero gravcomp
+  mjtBool flg_surfacevel;         // whether any geom has nonzero surfacevel
 
   // ------------------------------- options and statistics
 
@@ -3219,6 +3223,8 @@ typedef struct mjvGeom_ {         // abstract geom
   int      objid;                 // mujoco object id; -1 for decor
   int      category;              // visual category
   int      matid;                 // material id; -1: no textured material
+  int      texid;                 // texture id; -1: none
+  int      texuniform;            // uniform cube mapping
   int      texcoord;              // mesh or flex geom has texture coordinates
   int      segid;                 // segmentation id; -1: not shown
 
@@ -3233,6 +3239,7 @@ typedef struct mjvGeom_ {         // abstract geom
   float    specular;              // specular coef
   float    shininess;             // shininess coef
   float    reflectance;           // reflectance coef
+  float    texrepeat[2];          // texture repetition for 2d mapping
 
   char     label[100];            // text label
 
