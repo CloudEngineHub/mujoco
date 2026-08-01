@@ -268,7 +268,7 @@ void App::OnModelLoaded(std::string filename, ModelKind model_kind) {
 
   platform::ForEachPlugin<platform::ModelPlugin>([&](auto* plugin) {
     if (plugin->post_model_loaded) {
-      plugin->post_model_loaded(plugin, model_path_.c_str());
+      plugin->post_model_loaded(plugin, model, model_path_.c_str());
     }
   });
   tmp_.update_threadpool = true;
@@ -811,6 +811,8 @@ void App::HandleKeyboardEvents() {
     ToggleFlag(vis_options_.flags[mjVIS_COM]);
   } else if (!is_freecam_wasd && ImGui_IsChordJustPressed(ImGuiKey_D)) {
     ToggleFlag(vis_options_.flags[mjVIS_STATIC]);
+  } else if (!is_freecam_wasd && ImGui_IsChordJustPressed(ImGuiKey_W)) {
+    ToggleFlag(renderer_->GetRenderFlags()[mjRND_WIREFRAME]);
   } else if (ImGui_IsChordJustPressed(ImGuiKey_Semicolon)) {
     ToggleFlag(vis_options_.flags[mjVIS_SKIN]);
   } else if (ImGui_IsChordJustPressed(ImGuiKey_GraveAccent)) {
@@ -2152,6 +2154,7 @@ void App::HelpGui() {
   ImGui::Text("Tendon");
   ImGui::Text("Texture");
   ImGui::Text("Transparent");
+  ImGui::Text("Wireframe");
 
   ImGui::NextColumn();
   ImGui::Indent(indent);
@@ -2181,6 +2184,7 @@ void App::HelpGui() {
   ImGui::Text("V");
   ImGui::Text("X");
   ImGui::Text("T");
+  ImGui::Text("W");
 
   ImGui::Columns();
 }
