@@ -5,6 +5,23 @@ Changelog
 Upcoming version (not yet released)
 -----------------------------------
 
+Actuation
+^^^^^^^^^
+- Added the :ref:`pid<actuator-pid>` actuator: a PID controller with real position and velocity setpoint inputs,
+  optional integral action (:ref:`ki<actuator-pid-ki>`, integrating the position error with
+  :ref:`imax<actuator-pid-imax>` anti-windup), setpoint rate limiting (:ref:`slewmax<actuator-pid-slewmax>`), and an
+  optional feedforward input. This subsumes the functionality of the ``mujoco.pid`` plugin with proper activation
+  state: correct under all integrators and visible to keyframes and sensors. With a zero velocity setpoint it is
+  identical to :ref:`position<actuator-position>`. The input signature is any subset of ``[pos, vel, ff]``, selected
+  by :ref:`input<actuator-pid-input>`; absent setpoint inputs are fixed at zero, so the control vector contains no
+  inert entries.
+
+.. admonition:: Breaking ABI changes
+   :class: caution
+
+   - :ref:`mjsActuator` gained ``velrange`` and ``ffrange`` fields, changing its size and layout. The :ref:`mjtGain`
+     and :ref:`mjtDyn` enums gained ``pid`` members, shifting the values of ``mjGAIN_USER`` and ``mjDYN_USER``.
+
 Engine
 ^^^^^^
 
@@ -29,6 +46,12 @@ Models
   held open by pinning the ring of vertices around its mouth, catching the standard humanoid dropped in from above.
   Unlike the poncho models, which are bending-only, this model exercises the 2D
   :ref:`stretch<flex-elasticity-elastic2d>` elasticity of a flex.
+
+Bug fixes
+^^^^^^^^^
+
+- Fixed a bug in the box-box collider where near-degenerate face clipping could generate contacts with spuriously
+  large penetration depth between nearly touching thin boxes with positive margin, causing resting stacks to explode.
 
 Version 3.11.0 (July 27, 2026)
 ------------------------------
