@@ -14,7 +14,7 @@
 # ==============================================================================
 """Generates the MJCF[] grammar table from src/xml/mjcf.schema.
 
-The table (src/xml/mjcf_table.inc) is the element tree consumed by the
+The table (src/xml/generated/mjcf_table.inc) is the element tree consumed by the
 mjXSchema validator: rows of {name, cardinality, attributes...} with
 {"<"}/{">"} nesting markers. It is checked in and gated by
 test/doc/doc_test.py, which regenerates it from the schema and diffs.
@@ -130,7 +130,12 @@ def generate() -> str:
         constraints.append(f"  {{{row_index}, '{KIND_CHAR[con.kind]}', "
                            f'"{spec}"}},')
 
-    children = [c for c in element.children() if c.name != element.name]
+    # self-recursion is implied by card R; alias elements (worldbody, frame,
+    # replicate) have no rows -- mjXSchema::NameMatch admits their tags
+    # against the body row
+    children = [c for c in element.children()
+                if c.name != element.name
+                and 'alias' not in schema.elements[c.name].facets]
     if project:
       # plugin configuration is not settable per-class
       children = [c for c in children if c.name != 'plugin']
