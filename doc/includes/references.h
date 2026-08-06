@@ -967,6 +967,7 @@ typedef struct mjModel_ {
   int*      mesh_texcoordadr;     // texcoord data address; -1: no texcoord   (nmesh x 1)
   int*      mesh_texcoordnum;     // number of texcoord                       (nmesh x 1)
   int*      mesh_graphadr;        // graph data address; -1: no graph         (nmesh x 1)
+  int*      mesh_extrema;         // extremum vertices in 3x3x3 directions    (nmesh x 27)
   float*    mesh_vert;            // vertex positions for all meshes          (nmeshvert x 3)
   float*    mesh_normal;          // normals for all meshes                   (nmeshnormal x 3)
   float*    mesh_texcoord;        // vertex texcoords for all meshes          (nmeshtexcoord x 2)
@@ -1251,6 +1252,8 @@ typedef struct mjResource_ {
   mjVFS* vfs;                                   // pointer to the VFS
   char timestamp[512];                          // timestamp of the resource
   const struct mjpResourceProvider* provider;   // pointer to the provider
+  const char* args;  // resource arguments/hints, URI query format key=val&...
+                     // (optional)
 } mjResource;
 typedef struct mjpResourceProvider {
   const char* prefix;               // prefix for match against a resource name
