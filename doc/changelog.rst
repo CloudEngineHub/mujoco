@@ -32,14 +32,6 @@ Actuation
   by :ref:`input<actuator-pid-input>`; absent setpoint inputs are fixed at zero, so the control vector contains no
   inert entries.
 
-.. admonition:: Breaking ABI changes
-   :class: caution
-
-   - :ref:`mjsActuator` gained ``velrange`` and ``ffrange`` fields, changing its size and layout. The :ref:`mjtGain`
-     and :ref:`mjtDyn` enums gained ``pid`` members, shifting the values of ``mjGAIN_USER`` and ``mjDYN_USER``.
-   - :ref:`mjResource` gained an ``args`` field (changing its size and layout), used to hold optional extra encoding and
-     decoding arguments formatted as URI query parameters (separated by ``&``).
-
 Engine
 ^^^^^^
 
@@ -52,6 +44,14 @@ Engine
 
 .. admonition:: Breaking API changes
    :class: attention
+
+   - Contacts of a flex with :ref:`passive<flexcomp-contact-passive>` collisions are now integrated implicitly:
+     their stiffness is carried by the effective metric rather than applied as an explicit spring, and can be far
+     stiffer than the timestep would otherwise permit. Models using passive collisions should be re-checked: the
+     feature now requires :at:`implicit` or :at:`implicitfast` with the CG solver, pyramidal cones and sleep
+     disabled; passive handling covers flex-flex, self-, and static-geometry contact, while contact with a moving
+     body stays on the constraint solver; and the stiffness is now a mass-scaled natural frequency rather than a
+     fixed 1e4.
 
    - Removed ``mjData.efm_L_rownnz``, ``mjData.efm_L_rowadr`` and ``mjData.efm_L_colind``. They described the sparsity
      of the effective-metric Cholesky factor, which no longer exists; ``mjData.efm_L`` now holds dense 3x3 blocks,
@@ -69,6 +69,10 @@ Engine
 
 Models
 ^^^^^^
+
+- Added `drape <https://github.com/google-deepmind/mujoco/blob/main/model/flex/drape.xml>`__ example model: three
+  cloths draped over a sphere, demonstrating :ref:`passive<flex-contact-passive>` collisions. It replaces the
+  ``sphere_passive`` model, which has been removed.
 
 - Added `bag <https://github.com/google-deepmind/mujoco/blob/main/model/flex/bag.xml>`__ example model: a cloth bag,
   held open by pinning the ring of vertices around its mouth, catching the standard humanoid dropped in from above.
@@ -124,6 +128,7 @@ OpenUSD
 ^^^^^^^
 
 - Upgraded Newton USD schemas support to version 0.4.0:
+
   - ``NewtonJointAPI`` (``newton:armature``, ``newton:damping``, ``newton:friction``) deprecates the ``MjcJointAPI``
     equivalent ``mjc:armature``, ``mjc:damping``, and ``mjc:frictionloss`` attributes.
   - ``NewtonMassAPI`` (``newton:massModel``, ``newton:inertia``) deprecates the ``MjcCollisionAPI``
@@ -137,6 +142,14 @@ OpenUSD
     base for ``MjcEqualityJointAPI``, this deprecates the ``mjc:coef0`` and ``mjc:coef1`` attributes and the
     ``mjc:target`` relationship.
   - Added support for ``NewtonArticulationRootAPI`` (``newton:jointsAddMobility``).
+
+.. admonition:: Breaking ABI changes
+   :class: caution
+
+   - :ref:`mjsActuator` gained ``velrange`` and ``ffrange`` fields, changing its size and layout. The :ref:`mjtGain`
+     and :ref:`mjtDyn` enums gained ``pid`` members, shifting the values of ``mjGAIN_USER`` and ``mjDYN_USER``.
+   - :ref:`mjResource` gained an ``args`` field (changing its size and layout), used to hold optional extra encoding and
+     decoding arguments formatted as URI query parameters (separated by ``&``).
 
 Version 3.11.0 (July 27, 2026)
 ------------------------------
