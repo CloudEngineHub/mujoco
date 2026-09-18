@@ -58,6 +58,30 @@ static void inline GradSquaredLengths(mjtNum gradient[6][2][3],
 }
 
 
+// add the stretch force of an element to the vertex forces frc: with the edge tensions
+// T = metric*elongation, the force on the two vertices of edge b is -T_b*gradient_b
+static void inline AddStretchForce(mjtNum* frc,
+                                   const int* vert,
+                                   const mjtNum elongation[6],
+                                   const mjtNum metric[36],
+                                   mjtNum gradient[6][2][3],
+                                   const int edge[6][2],
+                                   int nedge) {
+  for (int ed2 = 0; ed2 < nedge; ed2++) {
+    mjtNum tension = 0;
+    for (int ed1 = 0; ed1 < nedge; ed1++) {
+      tension += elongation[ed1] * metric[nedge*ed1 + ed2];
+    }
+    for (int i = 0; i < 2; i++) {
+      mjtNum* frc_i = frc + 3*vert[edge[ed2][i]];
+      for (int x = 0; x < 3; x++) {
+        frc_i[x] -= tension * gradient[ed2][i][x];
+      }
+    }
+  }
+}
+
+
 // passive forces for interpolated flex (stretch + bending)
 static void mj_flexPassiveInterp(const mjModel* m, mjData* d, int f,
                                  int enbl_spring, int enbl_damper) {
@@ -561,7 +585,6 @@ static void mj_flexPassiveStretch(const mjModel* m, mjData* d, int f,
 
   int dim = m->flex_dim[f];
   int nedge = (dim == 2) ? 3 : 6;
-  int nvert = (dim == 2) ? 3 : 4;
   const int* elem = m->flex_elem + m->flex_elemdataadr[f];
   const int* edgeelem = m->flex_elemedge + m->flex_elemedgeadr[f];
   mjtNum* xpos = d->flexvert_xpos + 3*m->flex_vertadr[f];
@@ -588,13 +611,15 @@ static void mj_flexPassiveStretch(const mjModel* m, mjData* d, int f,
     // Kharevych et al., "Geometric, Variational Integrators for Computer
     // Animation" http://multires.caltech.edu/pubs/DiscreteLagrangian.pdf
 
-    // extract elongation of edges belonging to this element
+    // extract elongation of edges belonging to this element; the damping term
+    // L^2 - Lprev^2 is factored as dL*(2*L - dL), dL = L - Lprev = vel*timestep,
+    // so it has no cancellation and vanishes exactly at zero velocity
     mjtNum elongation[6];
     for (int e = 0; e < nedge; e++) {
       int idx = edgeelem[t * nedge + e];
-      mjtNum previous = deformed[idx] - vel[idx] * m->opt.timestep;
+      mjtNum dL = vel[idx] * m->opt.timestep;
       elongation[e] = deformed[idx]*deformed[idx] - reference[idx]*reference[idx] +
-                     (deformed[idx]*deformed[idx] - previous*previous) * kD;
+                      dL*(2*deformed[idx] - dL) * kD;
     }
 
     // unpack triangular representation
@@ -607,26 +632,7 @@ static void mj_flexPassiveStretch(const mjModel* m, mjData* d, int f,
       }
     }
 
-    // compute local force
-    mjtNum force[12] = {0};
-    for (int ed1 = 0; ed1 < nedge; ed1++) {
-      for (int ed2 = 0; ed2 < nedge; ed2++) {
-        for (int i = 0; i < 2; i++) {
-          for (int x = 0; x < 3; x++) {
-            force[3 * edges[dim-2][ed2][i] + x] -=
-                elongation[ed1] * gradient[ed2][i][x] *
-                metric[nedge * ed1 + ed2];
-          }
-        }
-      }
-    }
-
-    // insert into global force
-    for (int i = 0; i < nvert; i++) {
-      for (int x = 0; x < 3; x++) {
-        qfrc[3*vert[i]+x] += force[3*i+x];
-      }
-    }
+    AddStretchForce(qfrc, vert, elongation, metric, gradient, edges[dim-2], nedge);
   }
 
   // insert force into qfrc_passive, straightforward for simple bodies,
@@ -797,36 +803,9 @@ static void mj_springdamper(const mjModel* m, mjData* d) {
       continue;
     }
 
-    mjtNum stiffness = 0;
-    const mjtNum* spoly = NULL;
-    if (enbl_spring) {
-      stiffness = m->tendon_stiffness[i];
-      spoly = m->tendon_stiffnesspoly + mjNPOLY*i;
-    }
-
-    mjtNum damping = 0;
-    mjtNum dpoly[mjNPOLY] = {0};
-    if (enbl_damper) {
-      mju_copy(dpoly, m->tendon_dampingpoly + mjNPOLY*i, mjNPOLY);
-      damping = m->tendon_damping[i] + mj_actuatorDamping(m, mjOBJ_TENDON, i, dpoly);
-    }
-
-    // both zero: nothing to do
-    if (stiffness == 0 && (!enbl_spring || mju_isZero(spoly, mjNPOLY)) &&
-        damping == 0   && mju_isZero(dpoly, mjNPOLY)) {
-      continue;
-    }
-
-    // compute spring force along tendon
-    mjtNum length = d->ten_length[i];
-    mjtNum lower = m->tendon_lengthspring[2*i];
-    mjtNum upper = m->tendon_lengthspring[2*i+1];
-    mjtNum x = (length > upper) ? length - upper : (length < lower) ? length - lower : 0;
-    mjtNum frc_spring = enbl_spring ? -x * mju_polyForce(stiffness, spoly, x, mjNPOLY, 0) : 0;
-
-    // compute damper force along tendon
-    mjtNum v = d->ten_velocity[i];
-    mjtNum frc_damper = enbl_damper ? -v * mju_polyForce(damping, dpoly, v, mjNPOLY, 1) : 0;
+    // compute spring and damper forces along tendon
+    mjtNum frc_spring, frc_damper;
+    mj_tendonSpringDamper(m, d, i, &frc_spring, &frc_damper);
 
     // transform to joint torque, add to qfrc_{spring, damper}
     if (frc_spring || frc_damper) {
