@@ -15,7 +15,7 @@ General
 
 - Added experimental simplified Stable Neo-Hookean elasticity for non-interpolated 3D flexes, enabled only through
   ``mjsFlex.elastic3d = 1``. It uses the full energy Hessian and preserves the Saint Venant-Kirchhoff (StVK) default (``0``).
-  The setting is not available in MJCF.
+  SNH requires the discrete integrator. The setting is not available in MJCF.
 - :ref:`.mjz <MJZArchives>` archives written on Windows now always use ``/`` separators.
 - Assets in a :ref:`meshdir<compiler-meshdir>` or :ref:`texturedir<compiler-texturedir>` now resolve correctly in
   :ref:`.mjz <MJZArchives>` archives when rewritten or when the directory path is absolute, uses ``..``, or uses a URI
@@ -24,6 +24,10 @@ General
 - Flex bending and stretching now include the motion and reaction forces of articulated vertex attachments. The discrete
   integrator supports these attachments with the CG solver; fixed and independent XYZ-slide attachments retain their
   optimized assembly. Elastic flexes attached to mocap bodies produce a compiler error.
+
+Engine
+^^^^^^
+- Added single-shot :ref:`multicontact<coMultiCCD>` for collisions with capsule geoms.
 
 Version 3.14.0 (September 22, 2026)
 -----------------------------------

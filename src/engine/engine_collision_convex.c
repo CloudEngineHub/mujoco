@@ -23,6 +23,7 @@
 #include <mujoco/mjdata.h>
 #include <mujoco/mjmacro.h>
 #include <mujoco/mjmodel.h>
+#include <mujoco/mjtype.h>
 #include "engine/engine_collision_gjk.h"
 #include "engine/engine_macro.h"
 #include "engine/engine_memory.h"
@@ -860,23 +861,39 @@ static void mju_rotateFrame(const mjtNum origin[3], const mjtNum rot[9],
 
 // return number of contacts supported by a single pass of narrowphase
 static int maxContacts(const mjModel* m, const mjCCDObj* obj1, const mjCCDObj* obj2) {
-  // single pass not supported for margins
-  if (obj1->margin > 0 || obj2->margin > 0) {
+  // single pass not supported for margins nor libccd
+  if (obj1->margin > 0 || obj2->margin > 0 || mjDISABLED(mjDSBL_NATIVECCD)) {
     return 1;
   }
 
-  // can return 8 contacts for box-box collision in one pass
+  // always return up to 8 contacts for box-box collision in one pass
   int type1 = obj1->geom_type;
   int type2 = obj2->geom_type;
   if (type1 == mjGEOM_BOX && type2 == mjGEOM_BOX) {
     return 8;
   }
 
-  // reduce geom collisions to 4 contacts max
-  if (type1 == mjGEOM_BOX || type1 == mjGEOM_MESH || type1 == mjGEOM_CYLINDER) {
-    if (type2 == mjGEOM_BOX || type2 == mjGEOM_MESH || type2 == mjGEOM_CYLINDER) {
-      return mjDISABLED(mjDSBL_MULTICCD) ? 1 : 4;
-    }
+  // multicontact isn't available
+  if (mjDISABLED(mjDSBL_MULTICCD)) {
+    return 1;
+  }
+
+  // geoms with flat faces
+  int hasface1 = (type1 == mjGEOM_BOX || type1 == mjGEOM_MESH || type1 == mjGEOM_CYLINDER);
+  int hasface2 = (type2 == mjGEOM_BOX || type2 == mjGEOM_MESH || type2 == mjGEOM_CYLINDER);
+
+  // geoms with only edges
+  int hasedge1 = (type1 == mjGEOM_CAPSULE);
+  int hasedge2 = (type2 == mjGEOM_CAPSULE);
+
+  // colliding geoms with flat faces
+  if (hasface1 && hasface2) {
+    return 4;
+  }
+
+  // colliding geoms with edges
+  if ((hasedge1 && hasface2) || (hasface1 && hasedge2) || (hasedge1 && hasedge2)) {
+    return 2;
   }
 
   // not supported for other geom types
@@ -892,21 +909,25 @@ int mjc_Convex(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2, m
   mjc_initCCDObj(&obj2, m, d, g2, margin);
   int max_contacts = maxContacts(m, &obj1, &obj2);
 
+  // ellipsoid (including sphere) geoms don't require multiple contacts
+  int isellipsoid1 = (obj1.geom_type == mjGEOM_ELLIPSOID || obj1.geom_type == mjGEOM_SPHERE);
+  int isellipsoid2 = (obj2.geom_type == mjGEOM_ELLIPSOID || obj2.geom_type == mjGEOM_SPHERE);
+
   // find initial contact
   int ncon = mjc_penetration(m, d, &obj1, &obj2, con, max_contacts, margin);
+
+  // fix normal for libccd
   if (mjDISABLED(mjDSBL_NATIVECCD) && ncon && g1 >= 0 && g2 >= 0) {
     mjc_fixNormal(m, d, con, g1, g2);
   }
 
   // no additional contacts needed
-  if (!mjDISABLED(mjDSBL_NATIVECCD) && max_contacts > 1) {
+  if (max_contacts > 1 || isellipsoid1 || isellipsoid2) {
     return ncon;
   }
 
   // look for additional contacts
-  if (ncon == 1 && !mjDISABLED(mjDSBL_MULTICCD)
-      && m->geom_type[g1] != mjGEOM_ELLIPSOID && m->geom_type[g1] != mjGEOM_SPHERE
-      && m->geom_type[g2] != mjGEOM_ELLIPSOID && m->geom_type[g2] != mjGEOM_SPHERE) {
+  if (ncon == 1 && !mjDISABLED(mjDSBL_MULTICCD) && !isellipsoid1 && !isellipsoid2) {
     // multiCCD parameters
     const mjtNum relative_tolerance = 1e-3;
     const mjtNum perturbation_angle = 1e-3;
@@ -1738,4 +1759,104 @@ int mjc_HFieldElem(const mjModel* m, mjData* d, mjPreContact* con, int g, int f,
   }
 
   return cnt;
+}
+
+
+// returns approximation (lower bound) of directed Hausdorff distance between two
+// compact convex geoms; if distance is positive then g1 is guaranteed to not be enclosed in g2
+mjtNum mjc_hausdorff(const mjModel* m, const mjData* d, int g1, int g2, int nitermax,
+                    mjtNum stepsize, mjtNum tolerance) {
+  if (g1 < 0 || g1 >= m->ngeom || g2 < 0 || g2 >= m->ngeom) {
+    mjERROR("invalid geom ids %d, %d", g1, g2);
+  }
+  mjtGeom type1 = (mjtGeom)m->geom_type[g1];
+  mjtGeom type2 = (mjtGeom)m->geom_type[g2];
+  if (type1 < mjGEOM_SPHERE || type1 > mjGEOM_MESH ||
+      type2 < mjGEOM_SPHERE || type2 > mjGEOM_MESH) {
+    mjERROR("only compact convex geoms are supported, got types %d and %d", type1, type2);
+  }
+
+  mjCCDObj obj1, obj2;
+  mjc_initCCDObj(&obj1, m, d, g1, 0);
+  mjc_initCCDObj(&obj2, m, d, g2, 0);
+
+  mjtNum x_k[6][3], best_x[6][3], best_grad[6][3], best_val[6], step[6];
+  int active[6] = {1, 1, 1, 1, 1, 1};
+
+  // seed with obj2's local axes
+  for (int s = 0; s < 6; s++) {
+    int axis = s / 2;
+    mjtNum sgn = (s % 2) ? -1.0 : 1.0;
+    x_k[s][0] = sgn * obj2.mat[0 + axis];
+    x_k[s][1] = sgn * obj2.mat[3 + axis];
+    x_k[s][2] = sgn * obj2.mat[6 + axis];
+    best_val[s] = -mjMAXVAL;
+    step[s] = stepsize;
+  }
+
+  for (int k = 0; k < nitermax; k++) {
+    int any_active = 0;
+    for (int s = 0; s < 6; s++) {
+      if (!active[s]) {
+        continue;
+      }
+
+      mjtNum v1[3], v2[3], vert[3];
+      obj1.support(v1, &obj1, x_k[s]);
+      obj2.support(v2, &obj2, x_k[s]);
+      mji_sub3(vert, v1, v2);
+      mjtNum val = mju_dot3(vert, x_k[s]);
+
+      // compute tangent gradient on S^2: grad = vert - (val * x_k[s])
+      mjtNum grad[3], scaled_x[3];
+      mju_scl3(scaled_x, x_k[s], val);
+      mju_sub3(grad, vert, scaled_x);
+      mjtNum grad_norm = mju_norm3(grad);
+
+      if (val > best_val[s]) {
+        best_val[s] = val;
+        mju_copy3(best_x[s], x_k[s]);
+
+        // scale-invariant angular convergence check
+        if (grad_norm <= mjMINVAL || grad_norm <= tolerance * mju_abs(val)) {
+          active[s] = 0;
+          continue;
+        }
+        mju_scl3(best_grad[s], grad, 1.0 / grad_norm);
+      } else {
+        // overshot a normal-cone ridge/peak: halve step and average subgradients
+        step[s] *= 0.5;
+        if (step[s] < tolerance) {
+          active[s] = 0;
+          continue;
+        }
+        if (grad_norm > mjMINVAL) {
+          mju_addToScl3(best_grad[s], grad, 1.0 / grad_norm);
+        }
+        mjtNum proj = mju_dot3(best_grad[s], best_x[s]);
+        mju_addToScl3(best_grad[s], best_x[s], -proj);
+        mjtNum avg_norm = mju_norm3(best_grad[s]);
+        if (avg_norm <= tolerance) {
+          active[s] = 0;
+          continue;
+        }
+        mju_scl3(best_grad[s], best_grad[s], 1.0 / avg_norm);
+      }
+
+      // step from best_x[s] in the unit tangent direction and normalize
+      mju_copy3(x_k[s], best_x[s]);
+      mju_addToScl3(x_k[s], best_grad[s], step[s]);
+      mju_normalize3(x_k[s]);
+      any_active = 1;
+    }
+    if (!any_active) {
+      break;
+    }
+  }
+
+  mjtNum max_val = best_val[0];
+  for (int s = 1; s < 6; s++) {
+    max_val = mju_max(max_val, best_val[s]);
+  }
+  return max_val;
 }
