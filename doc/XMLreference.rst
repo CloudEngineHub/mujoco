@@ -6029,11 +6029,13 @@ This element has one custom attribute in addition to the common attributes:
    `damping ratio <https://en.wikipedia.org/wiki/Damping#Damping_ratio_definition>`__.
    A value of 1 corresponds to a *critically damped* oscillator, which often produces desirable behavior.
    Values smaller or larger than 1 correspond to underdamped and overdamped oscillations, respectively.
-   The mass :math:`m` is computed at the reference configuration ``mjModel.qpos0``, taking into account joint
-   :ref:`armature <body-joint-armature>`.
+   The reflected mass :math:`m = (J M^{-1} J^T)^{-1}` is computed at the reference configuration ``mjModel.qpos0`` from
+   the actuator transmission Jacobian :math:`J` and inertia matrix :math:`M` (averaged across force outputs for
+   multi-output actuators), taking into account joint :ref:`armature <body-joint-armature>`, tendon
+   :ref:`armature <tendon-spatial-armature>`, and actuator :ref:`armature <actuator-general-armature>`.
    However, passive :ref:`damping <body-joint-damping>` or :ref:`frictionloss <body-joint-frictionloss>` in the affected
-   joints are not taken into account; if they are non-negligible, :at:`dampratio` values smaller than 1 might be
-   required to achieve desirable motion.
+   joints or tendons are not taken into account; if they are non-negligible, :at:`dampratio` values smaller than 1 might
+   be required to achieve desirable motion.
    When using this attribute, it is recommended to use the implicitfast or implicit :ref:`integrators<geIntegration>`.
 
 .. _actuator-position-timeconst:
@@ -8654,19 +8656,31 @@ See `example model <https://github.com/google-deepmind/mujoco/blob/main/test/eng
 .. _sensor-insidesite-objtype:
 
 :at:`objtype`: :at-val:`[body, xbody, geom, site, camera], required`
-   The type of the object whose position will be queried.
-   See :ref:`framepos<sensor-framepos>`.
+   The type of the object to be queried. When :at:`enclosed` is ``"false"``, this specifies the coordinate frame whose
+   origin is checked (see :ref:`framepos<sensor-framepos>`). When :at:`enclosed` is ``"true"``, ``body`` checks all geoms
+   directly attached to the body, ``xbody`` checks all geoms in the kinematic subtree rooted at the body, and ``camera``
+   is not supported.
 
 .. _sensor-insidesite-objname:
 
 :at:`objname`: :at-val:`string, required`
-   The name of the object whose position will be queried.
+   The name of the object to be queried.
    See :ref:`framepos<sensor-framepos>`.
 
 .. _sensor-insidesite-site:
 
 :at:`site`: :at-val:`string`
    The site defining the volume used for the inside check.
+
+.. _sensor-insidesite-enclosed:
+
+:at:`enclosed`: :at-val:`bool, "false"`
+   If true, checks full geometric enclosure instead of only checking whether the frame origin is inside the site. The
+   sensor measures how much the object juts out of the site (the directed Hausdorff distance): positive values indicate
+   how far the furthest point protrudes outside the site boundary, while zero or negative values indicate the object is
+   fully enclosed (with the magnitude representing clearance to the boundary). Both the site and all queried geoms/sites
+   must be compact convex shapes. For ``objtype="body"`` or ``objtype="xbody"``, the sensor returns the maximum value
+   across all geoms on the body or in its kinematic subtree, respectively (at least one geom must be present).
 
 
 
