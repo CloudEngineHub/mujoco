@@ -35,6 +35,7 @@
 namespace mujoco {
 namespace {
 
+using ::testing::DoubleNear;
 using ::testing::ElementsAre;
 using ::testing::HasSubstr;
 using ::testing::IsEmpty;
@@ -1357,6 +1358,56 @@ TEST_F(FuseStaticTest, FuseStaticInertia) {
   }
 }
 
+// the geoms of a body which gives a massless inertial do not add their mass to
+// a parent which infers its inertia when the body is fused
+TEST_F(FuseStaticTest, FuseStaticMasslessInertial) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <compiler fusestatic="%s"/>
+    <worldbody>
+      <body name="moving">
+        <freejoint name="free"/>
+        <geom name="moving" type="box" size=".1 .2 .3" pos=".1 0 0"/>
+        <body name="static" pos="1 0 0" euler="10 20 30">
+          <inertial pos="%s" mass="%s" diaginertia="0 0 0"/>
+          <geom name="static" type="box" size=".3 .1 .2" pos="0 .2 0"/>
+        </body>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  struct Case {
+    const char* pos;
+    const char* mass;
+  };
+  const Case cases[] = {{"0 0 0", "0"}, {".1 .2 .3", "1e-20"}};
+  for (const Case& c : cases) {
+    SCOPED_TRACE(absl::StrFormat("pos '%s' mass '%s'", c.pos, c.mass));
+    std::string fuse_xml = absl::StrFormat(xml, "true", c.pos, c.mass);
+    std::string no_fuse_xml = absl::StrFormat(xml, "false", c.pos, c.mass);
+    MjModelPtr fuse = LoadModelFromString(fuse_xml);
+    MjModelPtr no_fuse = LoadModelFromString(no_fuse_xml);
+    ASSERT_THAT(fuse.get(), NotNull());
+    ASSERT_THAT(no_fuse.get(), NotNull());
+    ASSERT_EQ(fuse->nbody, 2);
+    ASSERT_EQ(no_fuse->nbody, 3);
+
+    int i = mj_name2id(fuse.get(), mjOBJ_BODY, "moving");
+    int j = mj_name2id(no_fuse.get(), mjOBJ_BODY, "moving");
+    ASSERT_GE(i, 0);
+    ASSERT_GE(j, 0);
+    EXPECT_NEAR(fuse->body_mass[i], no_fuse->body_mass[j], 1e-12);
+    EXPECT_NEAR(fuse->body_subtreemass[i], no_fuse->body_subtreemass[j], 1e-12);
+    EXPECT_THAT(AsVector(fuse->body_inertia + 3 * i, 3),
+                Pointwise(DoubleNear(1e-12),
+                          AsVector(no_fuse->body_inertia + 3 * j, 3)));
+    EXPECT_THAT(
+        AsVector(fuse->body_ipos + 3 * i, 3),
+        Pointwise(DoubleNear(1e-12), AsVector(no_fuse->body_ipos + 3 * j, 3)));
+    ExpectCoherentFuse(fuse_xml, no_fuse_xml, 0);
+  }
+}
+
 // fusestatic does not discard the free joint alignment of cameras and lights
 TEST_F(FuseStaticTest, FuseStaticAlignFree) {
   static constexpr char xml[] = R"(
@@ -2052,6 +2103,78 @@ TEST_F(DiscardVisualTest, DiscardVisualThenError) {
   ASSERT_THAT(m, NotNull()) << mjs_getError(spec);
   EXPECT_EQ(m->ngeom, 1);
   mj_deleteModel(m);
+  mj_deleteSpec(spec);
+}
+
+// discarding visual elements deletes the plugin instances which only they refer
+// to, also in a spec which was never compiled, and keeps those which another
+// element refers to
+TEST_F(DiscardVisualTest, DiscardVisualDeletesPluginInstances) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <extension>
+      <plugin plugin="mujoco.sdf.torus">
+        <instance name="shared">
+          <config key="radius1" value="0.35"/>
+          <config key="radius2" value="0.15"/>
+        </instance>
+      </plugin>
+    </extension>
+    <asset>
+      <mesh name="shared">
+        <plugin instance="shared"/>
+      </mesh>
+      <mesh name="visual">
+        <plugin plugin="mujoco.sdf.torus">
+          <config key="radius1" value="0.25"/>
+          <config key="radius2" value="0.125"/>
+        </plugin>
+      </mesh>
+    </asset>
+    <worldbody>
+      <body>
+        <freejoint/>
+        <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+        <geom name="collides" type="sdf" mesh="shared">
+          <plugin instance="shared"/>
+        </geom>
+        <geom name="visual" type="sdf" mesh="visual" contype="0" conaffinity="0">
+          <plugin plugin="mujoco.sdf.torus">
+            <config key="radius1" value="0.25"/>
+            <config key="radius2" value="0.125"/>
+          </plugin>
+        </geom>
+        <geom name="shares" type="sdf" mesh="shared" contype="0" conaffinity="0">
+          <plugin instance="shared"/>
+        </geom>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  auto instances = [](mjSpec* spec) {
+    int n = 0;
+    for (mjsElement* plugin = mjs_firstElement(spec, mjOBJ_PLUGIN); plugin;
+         plugin = mjs_nextElement(spec, plugin)) {
+      n++;
+    }
+    return n;
+  };
+  std::array<char, 1024> error;
+  mjSpec* spec = mj_parseXMLString(xml, 0, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+  ASSERT_EQ(instances(spec), 3);
+
+  ASSERT_EQ(mjs_discardVisual(spec, nullptr), 0) << mjs_getError(spec);
+  EXPECT_THAT(mjs_findElement(spec, mjOBJ_GEOM, "visual"), IsNull());
+  EXPECT_THAT(mjs_findElement(spec, mjOBJ_GEOM, "shares"), IsNull());
+  EXPECT_THAT(mjs_findElement(spec, mjOBJ_MESH, "visual"), IsNull());
+  ASSERT_EQ(instances(spec), 1);
+  EXPECT_THAT(mjs_findElement(spec, mjOBJ_PLUGIN, "shared"), NotNull());
+
+  mjModel* model = mj_compile(spec, nullptr);
+  ASSERT_THAT(model, NotNull()) << mjs_getError(spec);
+  EXPECT_EQ(model->nplugin, 1);
+  mj_deleteModel(model);
   mj_deleteSpec(spec);
 }
 
