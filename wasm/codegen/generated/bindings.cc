@@ -4255,7 +4255,14 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .value("mjMESH_BUILTIN_SUPERSPHERE", mjMESH_BUILTIN_SUPERSPHERE)
     .value("mjMESH_BUILTIN_SUPERTORUS", mjMESH_BUILTIN_SUPERTORUS)
     .value("mjMESH_BUILTIN_WEDGE", mjMESH_BUILTIN_WEDGE)
-    .value("mjMESH_BUILTIN_PLATE", mjMESH_BUILTIN_PLATE);
+    .value("mjMESH_BUILTIN_PLATE", mjMESH_BUILTIN_PLATE)
+    .value("mjMESH_BUILTIN_GRID", mjMESH_BUILTIN_GRID)
+    .value("mjMESH_BUILTIN_BOX", mjMESH_BUILTIN_BOX)
+    .value("mjMESH_BUILTIN_CYLINDER", mjMESH_BUILTIN_CYLINDER)
+    .value("mjMESH_BUILTIN_ELLIPSOID", mjMESH_BUILTIN_ELLIPSOID)
+    .value("mjMESH_BUILTIN_SQUARE", mjMESH_BUILTIN_SQUARE)
+    .value("mjMESH_BUILTIN_DISC", mjMESH_BUILTIN_DISC)
+    .value("mjMESH_BUILTIN_CIRCLE", mjMESH_BUILTIN_CIRCLE);
   enum_<mjtMeshInertia>("mjtMeshInertia")
     .value("mjMESH_INERTIA_CONVEX", mjMESH_INERTIA_CONVEX)
     .value("mjMESH_INERTIA_EXACT", mjMESH_INERTIA_EXACT)
@@ -5983,7 +5990,9 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("userface", &MjsMesh::userface, reference())
     .property("userfacenormal", &MjsMesh::userfacenormal, reference())
     .property("userfacetexcoord", &MjsMesh::userfacetexcoord, reference())
+    .property("usernode", &MjsMesh::usernode, reference())
     .property("usernormal", &MjsMesh::usernormal, reference())
+    .property("usertet", &MjsMesh::usertet, reference())
     .property("usertexcoord", &MjsMesh::usertexcoord, reference())
     .property("uservert", &MjsMesh::uservert, reference());
   emscripten::class_<MjsNumeric>("MjsNumeric")

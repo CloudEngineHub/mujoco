@@ -1066,7 +1066,8 @@ disable length range computations altogether, include this element and set mode=
    value will be used and the automatic computation will be skipped. The range is considered defined if the first number
    is smaller than the second number. The only reason to set this attribute to "false" is to force re-computation of
    actuator length ranges - which is needed when the model geometry is modified. Note that the automatic computation
-   relies on simulation and can be slow, so saving the model and using the existing values when possible is recommended.
+   relies on simulation and can be slow, so saving the model with the values which compilation made
+   (:ref:`savecompiled<compiler-savecompiled>`) and using the existing values when possible is recommended.
 
 .. _compiler-lengthrange-uselimit:
 
@@ -1611,11 +1612,66 @@ The full list of processing steps applied by the compiler to each mesh is as fol
       **res_x**: integer > 0: The horizontal resolution of the plate.
       |br| **res_y**: integer > 0: The vertical resolution of the plate.
 
+   :at-val:`grid` (count[3], spacing[3], [dim])
+      A regular grid of vertices. If ``dim`` is 3 (default), creates a volumetric tetrahedral mesh. If ``dim`` is 2,
+      creates a triangulated 2D surface mesh. If ``dim`` is 1, creates ordered nodes only, which can be used by
+      flexcomp but not by geoms.
+
+      **count**: 3 integers > 0: Number of vertices along each axis; must be 1 along the axes beyond ``dim``.
+      |br| **spacing**: 3 reals: Spacing between grid points along each axis.
+      |br| **dim**: optional integer in [1, 3] (default 3): Mesh dimensionality.
+
+   :at-val:`box` (count[3], spacing[3], [dim])
+      A procedural box mesh. If ``dim`` is 3 (default), creates a volumetric tetrahedral mesh. If ``dim`` is 2,
+      creates a triangular surface mesh.
+
+      **count**: 3 integers >= 2: Grid resolution along each axis.
+      |br| **spacing**: 3 reals: Spacing along each axis.
+      |br| **dim**: optional integer in [2, 3] (default 3): Mesh dimensionality.
+
+   :at-val:`cylinder` (count[3], spacing[3], [dim])
+      A procedural cylinder mesh. If ``dim`` is 3 (default), creates a volumetric tetrahedral mesh. If ``dim`` is 2,
+      creates a triangular surface mesh.
+
+      **count**: 3 integers >= 2: Grid resolution along each axis.
+      |br| **spacing**: 3 reals: Spacing along each axis.
+      |br| **dim**: optional integer in [2, 3] (default 3): Mesh dimensionality.
+
+   :at-val:`ellipsoid` (count[3], spacing[3], [dim])
+      A procedural ellipsoid mesh. If ``dim`` is 3 (default), creates a volumetric tetrahedral mesh. If ``dim`` is 2,
+      creates a triangular surface mesh.
+
+      **count**: 3 integers >= 2: Grid resolution along each axis.
+      |br| **spacing**: 3 reals: Spacing along each axis.
+      |br| **dim**: optional integer in [2, 3] (default 3): Mesh dimensionality.
+
+   :at-val:`square` (count[3], spacing[3])
+      A 2D triangulated square surface mesh.
+
+      **count**: 3 integers (first 2 must be > 0, last must be 1): Number of vertices along the x and y axes.
+      |br| **spacing**: 3 reals: Spacing along each axis.
+
+   :at-val:`disc` (count[3], spacing[3])
+      A 2D triangulated disc surface mesh.
+
+      **count**: 3 integers (first 2 must be > 0, last must be 1): Number of vertices along the radial and angular
+      directions.
+      |br| **spacing**: 3 reals: Spacing along each axis.
+
+   :at-val:`circle` (count[3], spacing[3])
+      A 1D circular mesh of ordered nodes, which can be used by flexcomp but not by geoms.
+
+      **count**: 3 integers (first must be >= 4): Number of grid points around the circle; the last point coincides
+      with the first, so ``count[0] - 1`` nodes are created.
+      |br| **spacing**: 3 reals: Spacing along each axis.
+
 .. _asset-mesh-params:
 
 :at:`params`: :at-val:`real(nparam), optional`
    The parameters used to generate a builtin mesh. The number and type of parameters and their semantic depends on the
-   mesh type. See :ref:`mesh/builtin<asset-mesh-builtin>` for details.
+   mesh type. See :ref:`mesh/builtin<asset-mesh-builtin>` for details. The ``square`` and ``disc`` types, and the
+   ``grid``, ``box``, ``cylinder`` and ``ellipsoid`` types with ``dim`` < 3, change a :at-val:`legacy`
+   :ref:`inertia<asset-mesh-inertia>` (including an explicit one) to :at-val:`shell`, since they have no volume.
 
 .. _asset-mesh-material:
 
@@ -2312,8 +2368,10 @@ defined. Its body name is automatically defined as "world".
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 This element specifies the mass and inertial properties of the body. If this element is not included in a given body,
-the inertial properties are inferred from the geoms attached to the body. When a compiled MJCF model is saved, the XML
-writer saves the inertial properties explicitly using this element, even if they were inferred from geoms. The inertial
+the inertial properties are inferred from the geoms attached to the body. A saved model has this element where it was
+written; the inferred properties are saved with it as well when :ref:`saveinertial<compiler-saveinertial>` is set, and
+in a model saved with the values which compilation made (:ref:`savecompiled<compiler-savecompiled>`, the default) also
+when :ref:`settotalmass<compiler-settotalmass>` scaled them or the saved file would not infer them again. The inertial
 frame is such that its center coincides with the center of mass of the body, and its axes coincide with the principal
 axes of inertia of the body. Thus the inertia matrix is diagonal in this frame.
 
@@ -2606,7 +2664,8 @@ an XML shortcut for
 While this joint can evidently be created with the :ref:`joint <body-joint>` element, default joint settings could
 affect it. This is usually undesirable as physical free bodies do not have nonzero stiffness, damping, friction or
 armature. To avoid this complication, the :el:`freejoint` element was introduced, ensuring joint defaults are *not
-inherited*. If the XML model is saved, it will appear as a regular joint of type :at:`free`.
+inherited*. In a model which is saved :ref:`as it was compiled<compiler-savecompiled>` it appears as a regular joint
+of type :at:`free`.
 
 
 .. _body-freejoint-name:
@@ -2632,8 +2691,9 @@ inherited*. If the XML model is saved, it will appear as a regular joint of type
    more stable simulation. While this behaviour is a strict improvement, it modifies the semantics of the free joint,
    making ``qpos`` and ``qvel`` values saved in older versions (for example, in :ref:`keyframes<keyframe>`) invalid.
 
-   Note that the :at:`align` attribute is never saved to XML. Instead, the pose of simple free bodies and their children
-   will be modified such that the body frame and inertial frame are aligned.
+   Note that when the values which compilation made are saved (:ref:`savecompiled<compiler-savecompiled>`), the
+   :at:`align` attribute is not saved. Instead, the pose of simple free bodies and their children will be modified such
+   that the body frame and inertial frame are aligned.
 
 .. _body-geom:
 
@@ -3946,7 +4006,7 @@ saving the XML:
    and `format 2.2 <https://gmsh.info//doc/texinfo/gmsh.html#MSH-file-format-version-2-_0028Legacy_0029>`__
    (ascii or binary). The file extension can be anything; the parser recognizes the format by examining
    the file header. This is a very rich file format, allowing all kinds of elements with different dimensionality and
-   topology. MuJoCo only supports GMSH element types 1, 2, 4 which happen to correspond to our 1D, 2D and 3D flexes and
+   topology. MuJoCo only supports GMSH element types 2 and 4 which happen to correspond to our 2D and 3D flexes and
    assumes that the nodes are specified in a single block. Only the Nodes and Elements sections of the GMHS file are
    processed, and used to populate the point and element data of the flexcomp. The parser will generate an error if the
    GMSH file contains meshes that are not supported by MuJoCo. :at:`dim` is automatically set to the dimensionality

@@ -1703,6 +1703,13 @@ typedef enum mjtMeshBuiltin {      // type of built-in procedural mesh
   mjMESH_BUILTIN_SUPERTORUS,       // supertorus
   mjMESH_BUILTIN_WEDGE,            // wedge
   mjMESH_BUILTIN_PLATE,            // plate
+  mjMESH_BUILTIN_GRID,             // grid (1D, 2D, or 3D)
+  mjMESH_BUILTIN_BOX,              // box
+  mjMESH_BUILTIN_CYLINDER,         // cylinder
+  mjMESH_BUILTIN_ELLIPSOID,        // ellipsoid
+  mjMESH_BUILTIN_SQUARE,           // square
+  mjMESH_BUILTIN_DISC,             // disc
+  mjMESH_BUILTIN_CIRCLE            // circle
 } mjtMeshBuiltin;
 typedef enum mjtBuiltin {          // type of built-in procedural texture
   mjBUILTIN_NONE = 0,              // no built-in texture
@@ -2130,6 +2137,8 @@ typedef struct mjsMesh_ {          // mesh specification
   mjIntVec* userface;              // user vertex indices
   mjIntVec* userfacenormal;        // user face normal indices
   mjIntVec* userfacetexcoord;      // user texcoord indices
+  mjDoubleVec* usernode;           // user volume node coordinates
+  mjIntVec* usertet;               // user tetrahedral cell indices
   mjsPlugin plugin;                // sdf plugin
   mjString* material;              // name of material
   int octree_maxdepth;             // max octree depth
@@ -4158,7 +4167,7 @@ mjtSize mju_writeResource(const char* name, const void* buffer, mjtSize nbytes,
 void mju_getResourceDir(mjResource* resource, const char** dir, int* ndir);
 int mju_isModifiedResource(const mjResource* resource, const char* timestamp);
 mjSpec* mju_decodeResource(mjResource* resource, const char* content_type,
-                           const mjVFS* vfs);
+                           const mjVFS* vfs, char* error, int error_sz);
 void mju_threadpool(mjData* d, int nthread);
 mjsElement* mjs_attach(mjsElement* parent, const mjsElement* child,
                        const char* prefix, const char* suffix);

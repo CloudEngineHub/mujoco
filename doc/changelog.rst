@@ -14,6 +14,23 @@ Engine
   wrapping near wrap onset and for inside wrapping. Thanks to :github:user:`M-Colley` for reporting and analyzing the
   issues in :doc:`MJWarp <mjwarp/index>` issues `1713 <https://github.com/google-deepmind/mujoco_warp/issues/1713>`__
   and `1714 <https://github.com/google-deepmind/mujoco_warp/issues/1714>`__.
+- Flex contacts are now reduced to ``mjMAXCONPAIR`` per geom only for rigid and interpolated flexes, which have few
+  degrees of freedom. Other flexes keep all their contacts. Since version 3.6.0 the contacts of every flex were reduced,
+  and in the midphase for all geoms of a body together, so a cloth dropped on a plane or on many static geoms in the
+  world body was held by at most 50 contacts and fell through.
+
+General
+^^^^^^^
+.. admonition:: Breaking API changes
+   :class: attention
+
+   - :ref:`mjfDecode`, the ``decode`` callback of :ref:`mjpDecoder` plugins, and :ref:`mju_decodeResource` now take
+     ``char* error, int error_sz`` arguments. A decoder which fails writes its reason into ``error``, which is then
+     reported by :ref:`mj_parse` and in mesh compilation errors, rather than only as a warning with a generic error.
+
+     **Migration:** Add the two arguments to custom decoders and write failure messages into ``error`` (if not
+     ``NULL``) instead of calling :ref:`mju_warning`. Pass an error buffer, or ``NULL, 0``, to
+     :ref:`mju_decodeResource`.
 
 Compiler
 ^^^^^^^^
@@ -81,6 +98,10 @@ Compiler
   ellipsoid :ref:`fluid model<body-geom-fluidshape>` are kept.
 - Added :ref:`mjs_adoptInertial`, which makes the inertial that compilation infers from the geoms of a body part of
   the :ref:`mjSpec`, so that it no longer follows later changes to the geoms.
+- Added procedural mesh types ``grid``, ``box``, ``cylinder``, ``ellipsoid``, ``square``, ``disc`` and ``circle`` to
+  :ref:`mesh/builtin<asset-mesh-builtin>` and :ref:`mjs_makeMesh`, generating the same shapes as the corresponding
+  :ref:`flexcomp<body-flexcomp>` types. The ``circle`` and 1D ``grid`` types only contain nodes. Types without volume
+  change a ``legacy`` mesh inertia to ``shell``.
 
 Bug fixes
 ^^^^^^^^^
@@ -131,6 +152,9 @@ Bug fixes
 - Saving the compiled values of an :ref:`mjSpec` which was structurally edited since it was compiled (elements
   added, deleted or attached) is now an error until it is compiled again; it used to crash or save wrong values. A
   spec which is saved as it is written needs no compilation.
+- :ref:`mj_parse` now parses an XML file whose name has no ``.xml`` extension when the resource provider which opens it
+  identifies it as XML, e.g. by adding the extension to the resource's name. Such files used to fail with "could not
+  decode content".
 
 Actuation
 ^^^^^^^^^
