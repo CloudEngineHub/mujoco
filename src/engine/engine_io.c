@@ -128,11 +128,14 @@ static void bufread(void* dest, mjtSize num, mjtSize szbuf, const void* buf, mjt
 }
 
 
-// number of bytes to be skipped to achieve 64-byte alignment
+// alignment of the arrays in the mjModel and mjData buffers
+#define BUFFER_ALIGN 64
+
+
+// number of bytes to be skipped to achieve BUFFER_ALIGN-byte alignment
 static inline unsigned int SKIP(intptr_t offset) {
-  const unsigned int align = 64;
   // compute skipped bytes
-  return (align - (offset % align)) % align;
+  return (BUFFER_ALIGN - (offset % BUFFER_ALIGN)) % BUFFER_ALIGN;
 }
 
 
@@ -154,14 +157,17 @@ static void mj_setPtrModel(mjModel* m) {
   MJMODEL_POINTERS
 #undef X
 
-  // check size
-  ptrdiff_t sz = ptr - (char*)m->buffer;
+  // check size, nbuffer includes the largest possible padding before the first array
+  ptrdiff_t sz = ptr - (char*)m->buffer - SKIP((intptr_t)m->buffer) + BUFFER_ALIGN - 1;
   if (m->nbuffer != sz) {
     mjERROR(
         "mjModel buffer size mismatch, "
         "expected size: %" PRIu64 ",  actual size: %td",
         m->nbuffer, sz);
   }
+
+  // poison unused bytes at the end of the buffer
+  ASAN_POISON_MEMORY_REGION(ptr, PTRDIFF((char*)m->buffer + m->nbuffer, ptr));
 }
 
 
@@ -231,7 +237,7 @@ void mj_makeModel(mjModel** dest,
     mjtSize nC, mjtSize nD, mjtSize ngeom, mjtSize nsite, mjtSize ncam, mjtSize nlight,
     mjtSize nflex, mjtSize nflexnode, mjtSize nflexvert, mjtSize nflexedge, mjtSize nflexelem,
     mjtSize nflexelemdata, mjtSize nflexstiffness, mjtSize nflexbending,
-    mjtSize nefm0dof, mjtSize nefm0L, mjtSize nflexelemedge,
+    mjtSize nefm0dof, mjtSize nefm0L, mjtSize nefmCvert, mjtSize nflexelemedge,
     mjtSize nflexshelldata, mjtSize nflextexcoord, mjtSize nJfe, mjtSize nJfv,
     mjtSize nmesh, mjtSize nmeshvert, mjtSize nmeshnormal, mjtSize nmeshtexcoord, mjtSize nmeshface,
     mjtSize nmeshgraph, mjtSize nmeshpoly, mjtSize nmeshpolyvert, mjtSize nmeshpolymap,
@@ -327,6 +333,7 @@ void mj_makeModel(mjModel** dest,
   m->nflexbending = nflexbending;
   m->nefm0dof = nefm0dof;
   m->nefm0L = nefm0L;
+  m->nefmCvert = nefmCvert;
   m->nflexelemedge = nflexelemedge;
   m->nflexshelldata = nflexshelldata;
   m->nflextexcoord = nflextexcoord;
@@ -389,8 +396,8 @@ void mj_makeModel(mjModel** dest,
   m->nnames_map = mjLOAD_MULTIPLE * nnames_map;
   m->npaths = npaths;
 
-  // compute buffer size
-  m->nbuffer = 0;
+  // compute buffer size, including padding to align the first array at any buffer address
+  m->nbuffer = BUFFER_ALIGN - 1;
 #define X(type, name, nr, nc)                                                \
   if (!safeAddToBufferSize(&offset, &m->nbuffer, sizeof(type), m->nr, nc)) { \
     if (allocate) mju_free(m);                                               \
@@ -438,7 +445,8 @@ mjModel* mj_copyModel(mjModel* dest, const mjModel* src) {
         src->nbvhdynamic, src->noct, src->njnt, src->ntree, src->nM, src->nB, src->nC, src->nD,
         src->ngeom, src->nsite, src->ncam, src->nlight, src->nflex, src->nflexnode, src->nflexvert,
         src->nflexedge, src->nflexelem, src->nflexelemdata, src->nflexstiffness,
-        src->nflexbending, src->nefm0dof, src->nefm0L, src->nflexelemedge, src->nflexshelldata,
+        src->nflexbending, src->nefm0dof, src->nefm0L, src->nefmCvert, src->nflexelemedge,
+        src->nflexshelldata,
         src->nflextexcoord, src->nJfe, src->nJfv, src->nmesh, src->nmeshvert, src->nmeshnormal,
         src->nmeshtexcoord, src->nmeshface, src->nmeshgraph, src->nmeshpoly, src->nmeshpolyvert,
         src->nmeshpolymap, src->nskin, src->nskinvert, src->nskintexvert, src->nskinface,
@@ -619,8 +627,7 @@ mjModel* mj_loadModelBuffer(const void* buffer, mjtSize buffer_sz) {
                sizes[56], sizes[57], sizes[58], sizes[59], sizes[60], sizes[61], sizes[62],
                sizes[63], sizes[64], sizes[65], sizes[66], sizes[67], sizes[68], sizes[69],
                sizes[70], sizes[71], sizes[72], sizes[73], sizes[74], sizes[75], sizes[76],
-               sizes[77], sizes[78], sizes[79], sizes[80], sizes[81],
-               sizes[82]);
+               sizes[77], sizes[78], sizes[79], sizes[80], sizes[81], sizes[82], sizes[83]);
 
   // mj_makeModel may fail if the input buffer has invalid sizes
   if (!m) {
@@ -1000,14 +1007,17 @@ static void mj_setPtrData(const mjModel* m, mjData* d) {
   MJDATA_POINTERS
 #undef X
 
-  // check size
-  ptrdiff_t sz = ptr - (char*)d->buffer;
+  // check size, nbuffer includes the largest possible padding before the first array
+  ptrdiff_t sz = ptr - (char*)d->buffer - SKIP((intptr_t)d->buffer) + BUFFER_ALIGN - 1;
   if (d->nbuffer != sz) {
     mjERROR(
         "mjData buffer size mismatch, "
         "expected size: %" PRIu64 ",  actual size: %td",
         d->nbuffer, sz);
   }
+
+  // poison unused bytes at the end of the buffer
+  ASAN_POISON_MEMORY_REGION(ptr, PTRDIFF((char*)d->buffer + d->nbuffer, ptr));
 
   // zero-initialize arena pointers
 #define X(type, name, nr, nc) d->name = NULL;
@@ -1074,8 +1084,8 @@ void mj_makeRawData(mjData** dest, const mjModel* m) {
   // prevent spurious timing print from mj_resetData before _resetData zeroes the struct
   d->timer[mjTIMER_STEP].number = 0;
 
-  // compute buffer size
-  d->nbuffer = 0;
+  // compute buffer size, including padding to align the first array at any buffer address
+  d->nbuffer = BUFFER_ALIGN - 1;
   d->buffer = d->arena = NULL;
 #define X(type, name, nr, nc)                                                \
   if (!safeAddToBufferSize(&offset, &d->nbuffer, sizeof(type), m->nr, nc)) { \

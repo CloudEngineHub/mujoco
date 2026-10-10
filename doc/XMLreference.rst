@@ -9046,8 +9046,9 @@ input to learning-based agents and in environment logic.
 
 Unlike the purely geometric :ref:`collision-sensors` that act independently of the dynamics pipeline, the contact
 sensor reports information that was discovered during the collision and constraint steps, extracting data
-from ``mjData.{contact, efc_force}``, ignoring contacts that were filtered out by the :ref:`standard<coSelection>`
-mechanism and produce no force.
+from ``mjData.{contact, efc_force}``. Contacts in ``mjData.contact`` that are excluded from constraint force
+computation (for example, within the :ref:`gap<body-geom-gap>` zone) are still matched and reported, with zero
+force and torque.
 
 Contact sensor output involves three stages: **matching**, **reduction**, and **extraction**.
 
@@ -9104,7 +9105,7 @@ Extraction
 
 .. _sensor-contact-data:
 
-:at:`data`: :at-val:`[found, force, torque, dist, pos, normal, tangent], "found"`
+:at:`data`: :at-val:`[found, force, torque, dist, pos, normal, tangent, linvel, angvel], "found"`
    Specification of which data field(s) to report from the selected contacts.
 
    - :at-val:`found` **real(1)**: This field serves two purposes. First, it indicates whether a contact was found in
@@ -9118,6 +9119,11 @@ Extraction
    - :at-val:`normal`: **real(3)**: The contact normal direction, in the global frame.
    - :at-val:`tangent`: **real(3)**: The first tangent direction, in the global frame.
      In order to complete the full 3x3 contact frame, use tangent2 = cross(normal, tangent).
+   - :at-val:`linvel`: **real(3)**: The relative linear velocity of the second contacting body with respect to the first
+     at the contact position, expressed in the contact frame. Positive normal velocity (first component) corresponds to
+     separation. Cannot be combined with ``reduce="netforce"``.
+   - :at-val:`angvel`: **real(3)**: The relative angular velocity of the second contacting body with respect to the
+     first, expressed in the contact frame. Cannot be combined with ``reduce="netforce"``.
 
    Importantly, the :at:`data` attribute can contain **multiple sequential data types**, as long as the relative
    order---as listed above---is maintained. For example, :at:`data` = :at-val:`"found force dist"` will return 5 numbers
@@ -9147,6 +9153,13 @@ Extraction
       In the case that a direction cannot be determined, as when only a :at:`site` is used as the matching criterion, or
       when both subtrees are the same, the normal direction is the same as it is in ``mjData.contact``, where the normal
       points from the first to the second geom, and the two geoms are sorted according to their order in :ref:`mjtGeom`.
+
+   Computation stage
+      The computation stage (``sensor_needstage``) of a contact sensor depends on the requested :at:`data` fields and
+      :ref:`reduce<sensor-contact-reduce>` criterion. If :at:`data` includes ``force`` or ``torque``, or if
+      :at:`reduce` is ``maxforce`` or ``netforce``, the sensor is evaluated at ``mjSTAGE_ACC``; otherwise, if
+      :at:`data` includes ``linvel`` or ``angvel``, it is evaluated at ``mjSTAGE_VEL``; otherwise it is evaluated at
+      ``mjSTAGE_POS``.
 
 .. _sensor-contact-reduce:
 
