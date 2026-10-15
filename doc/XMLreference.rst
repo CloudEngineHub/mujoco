@@ -2309,9 +2309,9 @@ defined. Its body name is automatically defined as "world".
    can be expensive. Trees initialized as sleeping can be placed in unstable configurations like deep penetration or in
    mid-air, but will only move when woken up. Also note that this policy can fail. For example if a tree marked as
    sleep="init" is in contact with a tree not marked as such (i.e., they are in the same :ref:`island<soIsland>`) then
-   it is impossible to put the tree to sleep; such `models
-   <https://github.com/google-deepmind/mujoco/blob/main/test/engine/testdata/sleep/init_island_fail.xml>`__ will lead to
-   a compilation error.
+   it is impossible to put the tree to sleep; for such `models
+   <https://github.com/google-deepmind/mujoco/blob/main/test/engine/testdata/sleep/init_island_fail.xml>`__ a warning
+   is issued and the trees which could not be slept start awake.
 
    See :ref:`implementation notes<siSleep>` for more details.
 
@@ -4320,6 +4320,7 @@ the saved XML file. Note that this element is a subset of the functionality of t
 :at:`frame`: :at-val:`string, optional`
    Name of the frame in the child model to attach here. If neither this attribute nor :ref:`body<body-attach-body>` is
    specified (only one allowed), the contents of the world body will be attached in a new :ref:`frame<body-frame>`.
+   Frames which enclose it in the child model are not attached.
 
 .. _body-attach-prefix:
 
