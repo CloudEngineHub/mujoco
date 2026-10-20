@@ -2031,8 +2031,7 @@ int mjs_fuseStatic(mjSpec* s, const mjVFS* vfs) {
     return -1;
   }
   try {
-    model->FuseStatic(vfs);
-    return 0;
+    return model->FuseStatic(vfs);
   } catch (mjCError& e) {
     model->SetError(e);
     return -1;
@@ -2048,8 +2047,23 @@ int mjs_discardVisual(mjSpec* s, const mjVFS* vfs) {
     return -1;
   }
   try {
-    model->DiscardVisual(vfs);
-    return 0;
+    return model->DiscardVisual(vfs);
+  } catch (mjCError& e) {
+    model->SetError(e);
+    return -1;
+  }
+}
+
+
+// merge the duplicate textures and meshes of the spec
+int mjs_dedupAssets(mjSpec* s) {
+  mjCModel* model = static_cast<mjCModel*>(s->element);
+  if (model->IsAttached()) {
+    model->SetError(mjCError(nullptr, "Cannot merge the assets of an attached mjSpec."));
+    return -1;
+  }
+  try {
+    return model->DedupAssets();
   } catch (mjCError& e) {
     model->SetError(e);
     return -1;

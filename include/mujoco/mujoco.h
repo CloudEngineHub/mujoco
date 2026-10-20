@@ -1969,13 +1969,17 @@ MJAPI int mjs_setFrame(mjsElement* dest, mjsFrame* frame);
 MJAPI const char* mjs_resolveOrientation(double quat[4], mjtByte degree, const char* sequence,
                                          const mjsOrientation* orientation);
 
-// Fuse the static bodies of the spec with their parents, return 0 on success.
+// Fuse the static bodies of the spec with their parents; return the number fused, -1 on error.
 // Nullable: vfs
 MJAPI int mjs_fuseStatic(mjSpec* s, const mjVFS* vfs);
 
-// Discard the visual elements of the spec, return 0 on success.
+// Discard the visual elements of the spec; return the number discarded, -1 on error.
 // Nullable: vfs
 MJAPI int mjs_discardVisual(mjSpec* s, const mjVFS* vfs);
+
+// Merge the textures and meshes of the spec which would compile to the same asset; return the number
+// merged, -1 on error.
+MJAPI int mjs_dedupAssets(mjSpec* s);
 
 // Make the inertial which compilation infers for a body part of the spec, return 0 on success.
 // Nullable: vfs

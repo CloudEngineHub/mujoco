@@ -10,9 +10,37 @@ Engine
 - Trees marked :ref:`sleep="init"<body-sleep>` which cannot be put to sleep now cause a warning rather than an error,
   and start awake. See :ref:`Sleeping<siSleepSleeping>` for details.
 - Added single-shot :ref:`multicontact<coMultiCCD>` for geoms with positive contact :ref:`margins<body-geom-margin>`.
+- :ref:`mj_setConst` now computes only values which follow from other fields of the model, and the compiler resolves
+  the conventions of the spec once. A model which is edited after compilation and passed to :ref:`mj_setConst` is
+  the model which recompiling the edited spec would give, apart from the values the compiler derives once:
+
+  - The compiler alone computes the values which the spec leaves to it: the damping of position actuators given a
+    :ref:`dampratio<actuator-position-dampratio>`, the spring length of tendons given ``(-1, -1)``, the relative pose
+    of welds between bodies given a zero quaternion, and the model statistics. :ref:`mj_setConst` no longer resolves
+    these conventions when they are written into a compiled model; code which did so should set the values directly,
+    which :ref:`mj_copyBack` now copies to the spec for tendon spring lengths too.
+  - Simulation no longer depends on the statistics: the constraint solvers scale their termination criteria by the
+    trace of the current inertia matrix, of the model or of an island, instead of ``mjModel.stat.meaninertia``.
+    Models solved with PGS, noslip or islands disabled can stop at slightly different iterations. The
+    :ref:`meaninertia<statistic-meaninertia>` attribute is deprecated and will be removed in a future release (compiling
+    a model that sets it now gives a warning; remove the attribute to migrate).
 
 Compiler
 ^^^^^^^^
+
+.. admonition:: Breaking API changes
+   :class: attention
+
+   - :ref:`mjs_fuseStatic` and :ref:`mjs_discardVisual` now return the number of bodies fused or elements discarded,
+     and -1 on error. Previously they returned 0 on success, so a caller could not tell whether the spec changed. In
+     Python, ``MjSpec.fuse_static`` and ``MjSpec.discard_visual`` return the same number instead of ``None``.
+
+     **Migration:** Test for an error with ``< 0`` rather than ``!= 0``.
+
+- Added :ref:`mjs_dedupAssets` (``MjSpec.dedup_assets``), which merges the textures and meshes of an :ref:`mjSpec`
+  that would compile to the same asset, as those of a sub-model attached several times do: the first of each group is
+  kept and every reference to the others is rewritten to it. Like :ref:`mjs_fuseStatic`, it returns the number of
+  assets merged.
 - Mesh polygon normals (``mjModel.mesh_polynormal``) are now computed from the whole polygon outline using Newell's
   method rather than the first three vertices (:issue:`3691`).
 
@@ -46,6 +74,8 @@ Bug fixes
   have none, or recompiled after such an edit, now compiles the stiffness of its current configuration. It used to keep
   the strain constraint eigenmodes as its stiffness matrix, so a flex switched from shell to volumetric ignored
   ``young`` and ``poisson`` and was unstable.
+- Fixed a bug in the Filament renderer where textures did not allocate mipmap levels, preventing mipmap generation and
+  causing minification aliasing, and where sRGB textures were unconditionally excluded from mipmapping.
 
 Version 3.16.0 (October 14, 2026)
 ---------------------------------
