@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cmath>
 #include <csetjmp>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -1395,8 +1396,8 @@ mjCHField* mjCModel::AddHField() {
 
 
 // add texture
-mjCTexture* mjCModel::AddTexture() {
-  return AddObject(textures_, "texture");
+mjCTexture* mjCModel::AddTexture(mjCDef* def) {
+  return AddObjectDefault(textures_, "texture", def);
 }
 
 
@@ -2162,11 +2163,12 @@ void mjCModel::CheckEmptyNames(void) {
 }
 
 
+// total length of the resolved paths of the assets in a list which have a file
 template <typename T>
 static size_t getpathslength(std::vector<T> list) {
   size_t result = 0;
   for (const auto& element : list) {
-    if (!element->File().empty()) { result += element->File().length() + 1; }
+    if (!element->File().empty()) { result += element->ResolvedFilePath().length() + 1; }
   }
 
   return result;
@@ -2498,6 +2500,10 @@ void mjCModel::SetSizes() {
   npaths += getpathslength(meshes);
   npaths += getpathslength(skins_);
   npaths += getpathslength(textures_);
+  for (const auto& texture : textures_) {
+    std::string type = texture->get_content_type();
+    if (!type.empty()) { npaths += type.length() + 1; }
+  }
   if (npaths == 0) { npaths = 1; }
 
   // nemax
@@ -2801,18 +2807,21 @@ void mjCModel::CopyNames(mjModel* m) {
   }
 }
 
-// process paths from one list: concatenate, compute addresses
+// process paths from one list: concatenate resolved paths, compute addresses
 template <class T>
 static int pathlist(vector<T*>& list, int adr, int* path_adr, char* paths) {
   for (unsigned int i = 0; i < list.size(); ++i) {
     path_adr[i] = -1;
     if (!list[i] || list[i]->File().empty()) { continue; }
-    adr = addtolist(list[i]->File(), adr, &path_adr[i], paths);
+    adr = addtolist(list[i]->ResolvedFilePath(), adr, &path_adr[i], paths);
   }
 
   return adr;
 }
 
+// copy the resolved path of every asset with a file: the path LoadResource opened, against the
+// modelfiledir and meshdir/texturedir of the spec that owns the asset, not the file as authored;
+// texture content types follow the paths, -1 if not authored
 void mjCModel::CopyPaths(mjModel* m) {
   std::vector<mjCMesh*>   meshes  = CompiledMeshes();
   std::vector<mjCHField*> hfields = CompiledHFields();
@@ -2824,6 +2833,12 @@ void mjCModel::CopyPaths(mjModel* m) {
   adr = pathlist(meshes, adr, m->mesh_pathadr, m->paths);
   adr = pathlist(skins_, adr, m->skin_pathadr, m->paths);
   adr = pathlist(textures_, adr, m->tex_pathadr, m->paths);
+
+  for (unsigned int i = 0; i < textures_.size(); ++i) {
+    m->tex_contenttypeadr[i] = -1;
+    std::string type         = textures_[i]->get_content_type();
+    if (!type.empty()) { adr = addtolist(type, adr, &m->tex_contenttypeadr[i], m->paths); }
+  }
 }
 
 
@@ -3895,9 +3910,18 @@ void mjCModel::CopyObjects(mjModel* m) {
     m->tex_nchannel[i]   = ptex->nchannel;
     m->tex_adr[i]        = data_adr;
 
+    // by reference: no payload, the resolved path is in paths at tex_pathadr
+    if (ptex->ByReference()) {
+      m->tex_adr[i] = -1;
+      continue;
+    }
+
     // copy rgb data
     mjtSize nbytes = static_cast<mjtSize>(ptex->nchannel) * ptex->width * ptex->height;
     memcpy(m->tex_data + data_adr, ptex->data_.data(), nbytes);
+
+    // the model has the pixels now; the next compile loads them again
+    std::vector<std::byte>().swap(ptex->data_);
 
     // advance counter
     data_adr += nbytes;

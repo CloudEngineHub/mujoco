@@ -203,6 +203,26 @@ def _flex_simple(mjm: mujoco.MjModel, f: int) -> bool:
   return True
 
 
+def _eff_flex_stiff_possible(mjm: mujoco.MjModel, f: int) -> bool:
+  """Whether flex f contributes elastic stiffness to the metric, see mj_effFlexStiffPossible."""
+  if mjm.flex_rigid[f]:
+    return False
+  badr = int(mjm.flex_bendingadr[f])
+  if mjm.flex_dim[f] == 1:
+    return badr >= 0
+  sadr = int(mjm.flex_stiffnessadr[f])
+  if sadr >= 0 and mjm.flex_stiffness[sadr] != 0 and mjm.flex_edgeequality[f] != 3:
+    return True
+  if badr < 0:
+    return False
+  end = mjm.nflexbending
+  for g in range(f + 1, mjm.nflex):
+    if mjm.flex_bendingadr[g] >= 0:
+      end = int(mjm.flex_bendingadr[g])
+      break
+  return bool(np.any(mjm.flex_bending[badr:end] != 0))
+
+
 def _get_efm_data(mjm: mujoco.MjModel) -> mujoco.MjData | None:
   """Runs position kinematics under discrete integrator on a temp MjData for flex stiffness."""
   if mjm.nflex == 0:
@@ -505,6 +525,9 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       raise NotImplementedError("Flex internal collisions are not implemented.")
     if (mjm.flex_rigid != 0).any():
       raise NotImplementedError("Rigid flexes are not implemented.")
+    # TODO(team): skip element pairs driven by a common grid node, as in mjc_ElemSharedNode
+    if np.any((mjm.flex_interp != 0) & (mjm.flex_selfcollide != 0) & ((mjm.flex_contype & mjm.flex_conaffinity) != 0)):
+      raise NotImplementedError("Self-collision of interpolated flexes (dof=trilinear or quadratic) is not implemented.")
   m.nmaxcondim = np.concatenate(condim_arrays).max()
   m.nmaxpyramid = np.maximum(1, 2 * (m.nmaxcondim - 1))
   m.has_sdf_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
@@ -536,12 +559,21 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     and any(
       mjm.flex_interp[f] == 0
       and not mjm.flex_rigid[f]
-      and mjm.flex_dim[f] >= 2
       and not flex_simple[f]
-      and (mjm.flex_bendingadr[f] >= 0 or (mjm.flex_stiffnessadr[f] >= 0 and mjm.flex_stiffness[mjm.flex_stiffnessadr[f]] != 0))
+      and (
+        (mjm.flex_dim[f] == 1 and mjm.flex_bendingadr[f] >= 0)
+        or (
+          mjm.flex_dim[f] >= 2
+          and (
+            mjm.flex_bendingadr[f] >= 0 or (mjm.flex_stiffnessadr[f] >= 0 and mjm.flex_stiffness[mjm.flex_stiffnessadr[f]] != 0)
+          )
+        )
+      )
       for f in range(mjm.nflex)
     )
   )
+  # 1D rod bending is integrated explicitly under implicit and implicitfast, unlike 2D and 3D
+  m.has_flex_stiff_dim23 = bool(any(mjm.flex_dim[f] > 1 and _eff_flex_stiff_possible(mjm, f) for f in range(mjm.nflex)))
   if (
     mjm.opt.integrator == mujoco.mjtIntegrator.mjINT_DISCRETE
     and mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
@@ -588,7 +620,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   efm_d = _get_efm_data(mjm)
   m.nefmK = int(efm_d.nefmK) if efm_d else 0
   m.nefmdof = int(efm_d.nefmdof) if efm_d else 0
-  m.nefmL = int(efm_d.nefmL) if efm_d else 0
+  m.nefmL = 9 * m.nefmdof
   m.efm_K_rownnz = efm_d.efm_K_rownnz if efm_d else np.zeros(mjm.nv, dtype=np.int32)
   m.efm_K_rowadr = efm_d.efm_K_rowadr if efm_d else np.zeros(mjm.nv, dtype=np.int32)
   m.efm_K_colind = efm_d.efm_K_colind if (efm_d and efm_d.efm_K_colind is not None) else np.zeros(0, dtype=np.int32)
@@ -1233,6 +1265,17 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       for face_idx in range(nfaces):
         flex_face_map.append((fi, face_idx))
       face_offset += nfaces
+
+  # 1D rod bending hinges: (flex id, address of the hinge data in flex_bending)
+  flex_rodhinge_map = []
+  for fi in range(mjm.nflex):
+    bendingadr = int(mjm.flex_bendingadr[fi])
+    if mjm.flex_dim[fi] != 1 or mjm.flex_interp[fi] != 0 or mjm.flex_rigid[fi] or bendingadr < 0:
+      continue
+    for h in range(int(mjm.flex_bending[bendingadr])):
+      flex_rodhinge_map.append((fi, bendingadr + 1 + types.ROD_HINGE_SIZE * h))
+  m.nflexrodhinge = len(flex_rodhinge_map)
+  m.flex_rodhinge_map = np.array(flex_rodhinge_map, dtype=np.int32).reshape(-1, 2)
 
   if not flex_bend_interp_map:
     m.nflexbend_interp = 0
@@ -1880,7 +1923,7 @@ def make_data(
   sizes["nflexface"] = _get_nflexface(mjm)
   efm_d = _get_efm_data(mjm)
   sizes["nefmK"] = int(efm_d.nefmK) if efm_d else 0
-  sizes["nefmL"] = int(efm_d.nefmL) if efm_d else 0
+  sizes["nefmL"] = 9 * int(efm_d.nefmdof) if efm_d else 0
 
   # qLD holds the factor: a packed dense region for dense blocks followed
   # by an nC-length LDL region for sparse blocks (present only when some block is sparse). Either
@@ -2114,7 +2157,7 @@ def put_data(
   sizes["nflexface"] = _get_nflexface(mjm)
   efm_d = _get_efm_data(mjm)
   sizes["nefmK"] = int(efm_d.nefmK) if efm_d else 0
-  sizes["nefmL"] = int(efm_d.nefmL) if efm_d else 0
+  sizes["nefmL"] = 9 * int(efm_d.nefmdof) if efm_d else 0
   lay = m_block_layout(mjm)
   qld_total = lay["total"] + (mjm.nC if lay["has_sparse"] else 0)
   sizes["qld_total"] = qld_total
@@ -2276,8 +2319,10 @@ def put_data(
     if f.name in d_kwargs:
       continue
     val = getattr(mjd, f.name, None)
-    if f.name in ("efm_K_val", "efm_L") and val is not None and val.size != sizes[f"nefm{f.name[4]}"]:
-      val = getattr(efm_d, f.name, None) if efm_d else None
+    if f.name == "efm_K_val" and val is not None and val.size != sizes["nefmK"]:
+      val = efm_d.efm_K_val if efm_d else None
+    elif f.name == "efm_L" and val is not None:
+      val = (efm_d.efm_L if (val.size < sizes["nefmL"] and efm_d) else val)[: sizes["nefmL"]]
     elif f.name == "efm_ts":
       val = np.zeros(mjm.ntendon, dtype=np.float32)
       if mjd.nefmT > 0 and mjd.efm_ts is not None and mjd.efm_tid is not None:

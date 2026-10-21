@@ -20,8 +20,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <ios>
+#include <iterator>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <gmock/gmock.h>
@@ -2514,8 +2519,8 @@ TEST_F(DedupAssetsTest, DedupAssetsKeepsDistinct) {
 
   // textures from buffers are merged only if the buffers are the same
   spec = mj_makeSpec();
-  mjsTexture* tex1 = mjs_addTexture(spec);
-  mjsTexture* tex2 = mjs_addTexture(spec);
+  mjsTexture* tex1 = mjs_addTexture(spec, nullptr);
+  mjsTexture* tex2 = mjs_addTexture(spec, nullptr);
   mjs_setName(tex1->element, "buffer1");
   mjs_setName(tex2->element, "buffer2");
   std::vector<std::byte> pixels1(3, std::byte{0});
@@ -2892,6 +2897,366 @@ TEST_F(MujocoTest, NestedMeshDir) {
   EXPECT_THAT(grandparent_model.get(), NotNull()) << error.data();
 
   mj_deleteVFS(vfs.get());
+}
+
+// ----------------------------- test paths ------------------------------------
+
+static constexpr char kCubeObj[] = R"(
+v -1 -1  1
+v  1 -1  1
+v -1  1  1
+v  1  1  1
+v -1  1 -1
+v  1  1 -1
+v -1 -1 -1
+v  1 -1 -1)";
+
+// the path stored for an asset, "" if none
+static std::string PathAt(const mjModel* m, int pathadr) {
+  return pathadr < 0 ? "" : std::string(m->paths + pathadr);
+}
+
+// normalized filesystem path for platform-independent comparison
+static std::filesystem::path NormalizedPath(const std::string& path) {
+  return std::filesystem::path(path).lexically_normal();
+}
+
+// whether a path stored in mjModel opens on its own, from any directory
+static bool Opens(const std::string& path) {
+  std::array<char, 1024> error;
+  mjResource* resource =
+      mju_openResource("", path.c_str(), nullptr, error.data(), error.size());
+  if (!resource) return false;
+  mju_closeResource(resource);
+  return true;
+}
+
+// write content to dir/name, creating dir
+static void WriteFile(const std::filesystem::path& dir, const std::string& name,
+                      std::string_view content) {
+  std::filesystem::create_directories(dir);
+  std::ofstream((dir / name).string(), std::ios::binary) << content;
+}
+
+// the content of a file under test/
+static std::string ReadTestData(const std::string& path) {
+  std::ifstream file(GetTestDataFilePath(path), std::ios::binary);
+  return std::string((std::istreambuf_iterator<char>(file)), {});
+}
+
+// a child model with a mesh, a height field and a texture from files, under
+// its own asset directories
+static std::string ChildXml(const std::string& meshdir,
+                            const std::string& texturedir) {
+  return absl::StrFormat(R"(
+  <mujoco>
+    <compiler meshdir="%s" texturedir="%s"/>
+    <asset>
+      <mesh name="cube" file="cube.obj"/>
+      <hfield name="terrain" file="hfield.png" size="1 1 .1 .1"/>
+      <texture name="tex" type="2d" file="hfield.png"/>
+      <material name="mat" texture="tex"/>
+    </asset>
+    <worldbody>
+      <body name="box">
+        <geom type="mesh" mesh="cube" material="mat"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )",
+                         meshdir, texturedir);
+}
+
+// paths in mjModel are resolved against the modelfiledir and the asset
+// directories of the spec that owns each asset, so that two attached models
+// with different directories keep their own files
+TEST_F(MujocoTest, PathsResolvedPerAttachedModel) {
+  static constexpr char parent_xml[] = R"(
+  <mujoco>
+    <asset>
+      <model name="a" file="a/a.xml"/>
+      <model name="b" file="b/b.xml"/>
+    </asset>
+    <worldbody>
+      <attach model="a" body="box" prefix="a_"/>
+      <attach model="b" body="box" prefix="b_"/>
+    </worldbody>
+  </mujoco>
+  )";
+
+  // the two children in sibling directories with different asset directories
+  std::filesystem::path root =
+      std::filesystem::path(testing::TempDir()) / "resolved_paths";
+  std::filesystem::remove_all(root);
+  std::string png = ReadTestData("user/testdata/hfield.png");
+  WriteFile(root, "parent.xml", parent_xml);
+  WriteFile(root / "a", "a.xml", ChildXml("meshes", "textures"));
+  WriteFile(root / "a" / "meshes", "cube.obj", kCubeObj);
+  WriteFile(root / "a" / "meshes", "hfield.png", png);
+  WriteFile(root / "a" / "textures", "hfield.png", png);
+  WriteFile(root / "b", "b.xml", ChildXml("geom", "img"));
+  WriteFile(root / "b" / "geom", "cube.obj", kCubeObj);
+  WriteFile(root / "b" / "geom", "hfield.png", png);
+  WriteFile(root / "b" / "img", "hfield.png", png);
+
+  std::array<char, 1024> error;
+  mjModel* m = mj_loadXML((root / "parent.xml").string().c_str(), nullptr,
+                          error.data(), error.size());
+  ASSERT_THAT(m, NotNull()) << error.data();
+  ASSERT_EQ(m->nmesh, 2);
+  ASSERT_EQ(m->nhfield, 2);
+  ASSERT_EQ(m->ntex, 2);
+
+  // each asset's path is its own file, which opens from any directory
+  auto expected = [&](mjtObj type, int i, const std::string& file) {
+    bool a = mj_id2name(m, type, i)[0] == 'a';
+    std::string dir = a ? "a/" : "b/";
+    bool mesh = type != mjOBJ_TEXTURE;
+    dir += mesh ? (a ? "meshes/" : "geom/") : (a ? "textures/" : "img/");
+    return (root / (dir + file)).lexically_normal();
+  };
+  for (int i = 0; i < 2; i++) {
+    EXPECT_EQ(NormalizedPath(PathAt(m, m->mesh_pathadr[i])),
+              expected(mjOBJ_MESH, i, "cube.obj"));
+    EXPECT_EQ(NormalizedPath(PathAt(m, m->hfield_pathadr[i])),
+              expected(mjOBJ_HFIELD, i, "hfield.png"));
+    EXPECT_EQ(NormalizedPath(PathAt(m, m->tex_pathadr[i])),
+              expected(mjOBJ_TEXTURE, i, "hfield.png"));
+    EXPECT_TRUE(Opens(PathAt(m, m->mesh_pathadr[i])));
+    EXPECT_TRUE(Opens(PathAt(m, m->hfield_pathadr[i])));
+    EXPECT_TRUE(Opens(PathAt(m, m->tex_pathadr[i])));
+  }
+  EXPECT_NE(PathAt(m, m->mesh_pathadr[0]), PathAt(m, m->mesh_pathadr[1]));
+
+  mj_deleteModel(m);
+  std::filesystem::remove_all(root);
+}
+
+// the resource provider of the "cubeobj" scheme serves a cube
+static int OpenCube(mjResource* resource) { return 1; }
+static int ReadCube(mjResource* resource, const void** buffer) {
+  *buffer = kCubeObj;
+  return sizeof(kCubeObj) - 1;
+}
+static void CloseCube(mjResource* resource) {}
+
+// an absolute path and a URI with a scheme are stored as authored, a relative
+// one under modelfiledir and meshdir
+TEST_F(MujocoTest, PathsAbsoluteAndScheme) {
+  mjpResourceProvider provider = {
+      .prefix = "cubeobj",
+      .open = OpenCube,
+      .read = ReadCube,
+      .close = CloseCube,
+  };
+  ASSERT_GT(mjp_registerProvider(&provider), 0);
+
+  std::filesystem::path root =
+      std::filesystem::path(testing::TempDir()) / "absolute_paths";
+  std::filesystem::remove_all(root);
+  WriteFile(root / "elsewhere", "cube.obj", kCubeObj);
+  WriteFile(root / "meshes" / "sub", "cube.obj", kCubeObj);
+  std::string absolute =
+      (root / "elsewhere" / "cube.obj").lexically_normal().string();
+  std::string xml = absl::StrFormat(R"(
+  <mujoco>
+    <compiler meshdir="meshes"/>
+    <asset>
+      <mesh name="absolute" file="%s"/>
+      <mesh name="scheme" file="cubeobj://assets/cube.obj"/>
+      <mesh name="relative" file="sub/cube.obj"/>
+    </asset>
+    <worldbody>
+      <geom type="mesh" mesh="absolute"/>
+      <geom type="mesh" mesh="scheme"/>
+      <geom type="mesh" mesh="relative"/>
+    </worldbody>
+  </mujoco>
+  )",
+                                    absolute);
+
+  std::array<char, 1024> error;
+  mjSpec* spec =
+      mj_parseXMLString(xml.c_str(), nullptr, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+  mjs_setString(spec->modelfiledir, root.string().c_str());
+  mjModel* m = mj_compile(spec, nullptr);
+  ASSERT_THAT(m, NotNull()) << mjs_getError(spec);
+
+  EXPECT_EQ(NormalizedPath(PathAt(m, m->mesh_pathadr[0])),
+            NormalizedPath(absolute));
+  EXPECT_EQ(PathAt(m, m->mesh_pathadr[1]), "cubeobj://assets/cube.obj");
+  EXPECT_EQ(NormalizedPath(PathAt(m, m->mesh_pathadr[2])),
+            (root / "meshes" / "sub" / "cube.obj").lexically_normal());
+  for (int i = 0; i < 3; i++) {
+    EXPECT_TRUE(Opens(PathAt(m, m->mesh_pathadr[i])));
+  }
+
+  mj_deleteModel(m);
+  mj_deleteSpec(spec);
+  std::filesystem::remove_all(root);
+}
+
+// strippath drops the directories of the file before it is resolved, and the
+// spec keeps the file as authored
+TEST_F(MujocoTest, PathsStripped) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <compiler meshdir="meshes" strippath="true"/>
+    <asset>
+      <mesh name="cube" file="../ignored/cube.obj"/>
+      <skin name="skin" file="skins/cube.skn"/>
+    </asset>
+    <worldbody>
+      <body name="box">
+        <geom type="mesh" mesh="cube"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  std::filesystem::path root =
+      std::filesystem::path(testing::TempDir()) / "stripped_paths";
+  std::filesystem::remove_all(root);
+  WriteFile(root / "meshes", "cube.obj", kCubeObj);
+  WriteFile(root / "meshes", "cube.skn",
+            ReadTestData("user/testdata/cube.skn"));
+
+  std::array<char, 1024> error;
+  mjSpec* spec = mj_parseXMLString(xml, nullptr, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+  mjs_setString(spec->modelfiledir, root.string().c_str());
+  mjModel* m = mj_compile(spec, nullptr);
+  ASSERT_THAT(m, NotNull()) << mjs_getError(spec);
+
+  EXPECT_EQ(NormalizedPath(PathAt(m, m->mesh_pathadr[0])),
+            (root / "meshes" / "cube.obj").lexically_normal());
+  EXPECT_EQ(NormalizedPath(PathAt(m, m->skin_pathadr[0])),
+            (root / "meshes" / "cube.skn").lexically_normal());
+  EXPECT_TRUE(Opens(PathAt(m, m->mesh_pathadr[0])));
+  EXPECT_TRUE(Opens(PathAt(m, m->skin_pathadr[0])));
+  EXPECT_EQ(mjs_getString(
+                mjs_asMesh(mjs_findElement(spec, mjOBJ_MESH, "cube"))->file),
+            std::string("../ignored/cube.obj"));
+  EXPECT_EQ(mjs_getString(
+                mjs_asSkin(mjs_findElement(spec, mjOBJ_SKIN, "skin"))->file),
+            std::string("skins/cube.skn"));
+
+  mj_deleteModel(m);
+  mj_deleteSpec(spec);
+  std::filesystem::remove_all(root);
+}
+
+// the content type of a texture is stored after the paths when authored, and
+// is -1 otherwise, for embedded textures too; it survives an MJB round trip
+TEST_F(MujocoTest, TextureContentType) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <asset>
+      <texture name="typed" type="2d" builtin="checker" width="4" height="4"
+        content_type="image/png"/>
+      <texture name="untyped" type="2d" builtin="checker" width="4" height="4"/>
+    </asset>
+  </mujoco>
+  )";
+
+  std::array<char, 1024> error;
+  MjModelPtr m = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(m, NotNull()) << error.data();
+  ASSERT_EQ(m->ntex, 2);
+
+  // no files, so paths holds only the content type
+  const mjtSize type_size = sizeof("image/png");
+  EXPECT_EQ(m->tex_pathadr[0], -1);
+  EXPECT_EQ(m->tex_pathadr[1], -1);
+  EXPECT_EQ(PathAt(m.get(), m->tex_contenttypeadr[0]), "image/png");
+  EXPECT_EQ(m->tex_contenttypeadr[1], -1);
+  EXPECT_EQ(m->npaths, type_size);
+
+  // round trip through MJB
+  std::vector<char> mjb(mj_sizeModel(m.get()));
+  mj_saveModel(m.get(), nullptr, mjb.data(), mjb.size());
+  MjModelPtr loaded(mj_loadModelBuffer(mjb.data(), mjb.size()));
+  ASSERT_THAT(loaded, NotNull());
+  EXPECT_EQ(loaded->npaths, m->npaths);
+  EXPECT_EQ(loaded->tex_contenttypeadr[0], m->tex_contenttypeadr[0]);
+  EXPECT_EQ(loaded->tex_contenttypeadr[1], -1);
+  EXPECT_EQ(PathAt(loaded.get(), loaded->tex_contenttypeadr[0]), "image/png");
+}
+
+// a model without content types stores only the paths, and attaching keeps the
+// content type of every texture
+TEST_F(MujocoTest, TextureContentTypeAttached) {
+  static constexpr char plain_xml[] = R"(
+  <mujoco>
+    <asset>
+      <texture name="plain" type="2d" file="hfield.png"/>
+    </asset>
+  </mujoco>
+  )";
+  static constexpr char parent_xml[] = R"(
+  <mujoco>
+    <asset>
+      <model name="a" file="child.xml"/>
+      <texture name="plain" type="2d" file="hfield.png"/>
+    </asset>
+    <worldbody>
+      <attach model="a" body="box" prefix="a_"/>
+      <attach model="a" body="box" prefix="b_"/>
+    </worldbody>
+  </mujoco>
+  )";
+  static constexpr char child_xml[] = R"(
+  <mujoco>
+    <asset>
+      <texture name="tex" type="2d" file="hfield.png" content_type="image/png"/>
+      <material name="mat" texture="tex"/>
+    </asset>
+    <worldbody>
+      <body name="box">
+        <geom size="1" material="mat"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  std::filesystem::path root =
+      std::filesystem::path(testing::TempDir()) / "content_types";
+  std::filesystem::remove_all(root);
+  WriteFile(root, "plain.xml", plain_xml);
+  WriteFile(root, "parent.xml", parent_xml);
+  WriteFile(root, "child.xml", child_xml);
+  WriteFile(root, "hfield.png", ReadTestData("user/testdata/hfield.png"));
+
+  // without content types, paths holds only the paths
+  std::array<char, 1024> error;
+  mjModel* m = mj_loadXML((root / "plain.xml").string().c_str(), nullptr,
+                          error.data(), error.size());
+  ASSERT_THAT(m, NotNull()) << error.data();
+  ASSERT_EQ(m->ntex, 1);
+  std::string path = PathAt(m, m->tex_pathadr[0]);
+  const mjtSize path_size = path.size() + 1;
+  const mjtSize type_size = sizeof("image/png");
+  EXPECT_EQ(m->tex_contenttypeadr[0], -1);
+  EXPECT_EQ(m->npaths, path_size);
+  mj_deleteModel(m);
+
+  // the attached textures keep their content type, the parent's has none
+  m = mj_loadXML((root / "parent.xml").string().c_str(), nullptr, error.data(),
+                 error.size());
+  ASSERT_THAT(m, NotNull()) << error.data();
+  ASSERT_EQ(m->ntex, 3);
+  int plain = mj_name2id(m, mjOBJ_TEXTURE, "plain");
+  ASSERT_GE(plain, 0);
+  for (int i = 0; i < m->ntex; i++) {
+    EXPECT_EQ(PathAt(m, m->tex_pathadr[i]), path);
+    EXPECT_EQ(PathAt(m, m->tex_contenttypeadr[i]),
+              i == plain ? "" : "image/png");
+  }
+  EXPECT_EQ(m->npaths, 3 * path_size + 2 * type_size);
+
+  mj_deleteModel(m);
+  std::filesystem::remove_all(root);
 }
 
 TEST_F(MujocoTest, ConvertSpringdamper) {
@@ -5033,8 +5398,8 @@ using MaterialTest = MujocoTest;
 // pointed at another texture compiles once the first texture is deleted
 TEST_F(MaterialTest, TextureFromSpec) {
   mjSpec* spec = mj_makeSpec();
-  mjsTexture* tex1 = mjs_addTexture(spec);
-  mjsTexture* tex2 = mjs_addTexture(spec);
+  mjsTexture* tex1 = mjs_addTexture(spec, nullptr);
+  mjsTexture* tex2 = mjs_addTexture(spec, nullptr);
   for (mjsTexture* tex : {tex1, tex2}) {
     tex->type = mjTEXTURE_2D;
     tex->builtin = mjBUILTIN_CHECKER;
