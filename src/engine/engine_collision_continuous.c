@@ -1433,6 +1433,9 @@ static inline mjtNum evalGeomPairDist(const mjModel* m, mjCCDObj* obj1, mjCCDObj
 
     mjtNum s[3], dir[3] = {-n[0], -n[1], -n[2]};
     other->support(s, other, dir);
+    other->nsupp = 1;
+    other->suppind[0] = other->vertindex;
+    mji_copy3(other->suppvert, s);
 
     // account for sphere or capsule radius
     mjtNum r = has_plane > 0 ? r2 : r1;
@@ -1464,6 +1467,7 @@ static inline mjtNum evalGeomPairDist(const mjModel* m, mjCCDObj* obj1, mjCCDObj
 
 // compute effective contact distance so that mj_referenceConstraint arrests (1 - t) of the
 // normal velocity over this step and lands the geom at margin at t = 1
+// TODO(kylebayes): consider reusing the solver directly
 static inline mjtNum contactDist(const mjModel* m, int g1, int g2, mjtNum margin, mjtNum t,
                                  mjtNum closing_dist) {
   int condim;
@@ -1513,12 +1517,12 @@ static inline mjtNum contactDist(const mjModel* m, int g1, int g2, mjtNum margin
         b0 = mju_min(b0 / mju_sqrt(excess), imp * mju_max(0.0, fmax - 2.0));
       }
       if (k0 > mjMINVAL) {
-        mjtNum rem = mju_max(0.0, 1.0 - t - t * (b0 + k0));
-        delta = mju_max(delta, (rem / k0) * closing_dist);
+        mjtNum rem = 1.0 - t - t * (b0 + k0);
+        delta = (rem / k0) * closing_dist;
       }
     } else if (k0 > mjMINVAL) {
-      mjtNum rem = mju_max(0.0, 1.0 - t - b0);
-      delta = mju_max(delta, (rem / k0) * closing_dist);
+      mjtNum rem = 1.0 - t - b0;
+      delta = (rem / k0) * closing_dist;
     }
   }
   return margin - delta;
@@ -1735,13 +1739,14 @@ int mjc_advanceGeomPair(const mjModel* m, const mjData* d, int g1, int g2,
     mji_copy3(x2_all, x2);
     dist_all[0] = dist;
 
-    if (buffer && !mjDISABLED(mjDSBL_MULTICCD) && obj1.nsupp > 0 && obj2.nsupp > 0) {
+    // plane geoms always use multicontact
+    int has_plane = (type1 == mjGEOM_PLANE || type2 == mjGEOM_PLANE);
+    if (buffer && (has_plane || !mjDISABLED(mjDSBL_MULTICCD))) {
       mjtNum pad = 2.0 * mju_max(0.0, dist) + m->opt.ccd_tolerance;
       obj1.margin = pad;
       obj2.margin = pad;
       mji_addToScl3(x1_all, normal, 0.5 * pad);
       mji_addToScl3(x2_all, normal, -0.5 * pad);
-      // TODO(kylebayes): support multicontact with plane geoms
       nx = mjc_multicontact(&obj1, &obj2, x1_all, x2_all, dist_all, 4,
                             m->nmeshdegmax, m->npolygonmax, buffer);
       for (int i = 0; i < nx; i++) {
