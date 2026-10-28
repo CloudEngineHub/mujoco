@@ -3998,6 +3998,21 @@ TEST_F(UserFlexTest, FcmSliverConditioningAndAccuracy) {
     }
   }
 
+  // The cut-cell quadrature is exact for the polyhedral mesh, so the reference
+  // for the quadrature error is the exact volume of the 768-tetrahedron
+  // polyhedron (1.9% below the smooth sphere), not the smooth sphere.
+  double v_poly_exact = 0.0;
+  for (size_t e = 0; e < elem3.size(); e += 4) {
+    const double* p1 = &pts3[3 * elem3[e + 1]];
+    const double* p2 = &pts3[3 * elem3[e + 2]];
+    const double* p3 = &pts3[3 * elem3[e + 3]];
+    double c0 = p2[1] * p3[2] - p2[2] * p3[1];
+    double c1 = p2[2] * p3[0] - p2[0] * p3[2];
+    double c2 = p2[0] * p3[1] - p2[1] * p3[0];
+    v_poly_exact += std::abs(p1[0] * c0 + p1[1] * c1 + p1[2] * c2) / 6.0;
+  }
+  const double u_poly_exact = 3.0 * kE * kEps0 * kEps0 * v_poly_exact;
+
   for (int nc : {2, 4, 6}) {
     for (const char* dof : {"trilinear", "quadratic"}) {
       for (int dim : {3, 2}) {
@@ -4060,9 +4075,14 @@ TEST_F(UserFlexTest, FcmSliverConditioningAndAccuracy) {
           u_fcm += -0.5 * d->qpos[i] * d->qfrc_spring[i];
         }
 
-        // FCM elastic energy is within 5% of exact sphere continuum energy
-        // (compared to +84% to +91% error without FCM subcell quadrature), and
-        // rotational inertia is significantly below the uniform-cube value.
+        // Moment fitting reproduces the elastic energy of the exact polyhedron
+        // on every grid and order (the remaining -1.9% against the smooth
+        // sphere is the chordal volume deficit of the mesh, not a quadrature
+        // error); the fictitious-domain stiffness kFcmAlphaMin contributes at
+        // most a few 1e-6 relative. Rotational inertia must stay well below
+        // the uniform-cube value.
+        EXPECT_NEAR(u_fcm, u_poly_exact, 1e-4 * u_poly_exact)
+            << "nc=" << nc << " dof=" << dof << " dim=" << dim;
         EXPECT_NEAR(u_fcm, u_sphere_exact, 0.05 * u_sphere_exact)
             << "nc=" << nc << " dof=" << dof << " dim=" << dim;
         if (nc >= 4) {
@@ -4261,6 +4281,303 @@ TEST_F(UserFlexTest, FastWindingBVHMatchesBruteForce) {
       (t0.a[2] + t0.b[2] + t0.c[2]) / 3.0,
   };
   EXPECT_EQ(closed_bvh.Evaluate(centroid), 1.0);
+}
+
+TEST_F(UserFlexTest, MultiMaterialFlex) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <asset>
+      <material name="mat0" rgba="1 0 0 1"/>
+      <material name="mat1" rgba="0 1 0 1"/>
+    </asset>
+    <worldbody>
+      <body name="b0" pos="0 0 0">
+        <joint type="slide"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+      </body>
+      <body name="b1" pos="1 0 0">
+        <joint type="slide"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+      </body>
+      <body name="b2" pos="0 1 0">
+        <joint type="slide"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+      </body>
+      <body name="b3" pos="1 1 0">
+        <joint type="slide"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+      </body>
+    </worldbody>
+    <deformable>
+      <flex name="f" dim="2" body="b0 b1 b2 b3" vertex="0 0 0 0 0 0 0 0 0 0 0 0"
+            element="0 1 2 1 3 2" material="mat0 mat1"/>
+    </deformable>
+  </mujoco>
+  )";
+  char error[1024] = {0};
+  using SpecPtr = std::unique_ptr<mjSpec, decltype(&mj_deleteSpec)>;
+  SpecPtr spec(mj_parseXMLString(xml, nullptr, error, sizeof(error)),
+               mj_deleteSpec);
+  ASSERT_THAT(spec.get(), NotNull()) << error;
+  MjModelPtr m(mj_compile(spec.get(), nullptr));
+  ASSERT_THAT(m.get(), NotNull()) << mjs_getError(spec.get());
+  ASSERT_EQ(m->nflex, 1);
+  ASSERT_EQ(m->nflexelem, 2);
+  int mat0_id = mj_name2id(m.get(), mjOBJ_MATERIAL, "mat0");
+  int mat1_id = mj_name2id(m.get(), mjOBJ_MATERIAL, "mat1");
+  EXPECT_EQ(m->flex_matid[0], mat0_id);
+  EXPECT_EQ(m->flex_matid[1], mat1_id);
+
+  // XML round-trip preserves per-element materials.
+  std::array<char, 8192> saved_xml;
+  ASSERT_GE(mj_saveXMLString(spec.get(), saved_xml.data(), saved_xml.size(),
+                             error, sizeof(error)),
+            0)
+      << error;
+  EXPECT_THAT(saved_xml.data(), HasSubstr("material=\"mat0 mat1\""));
+  MjModelPtr m2 = LoadModelFromString(saved_xml.data(), error, sizeof(error));
+  ASSERT_THAT(m2.get(), NotNull()) << error;
+  ASSERT_EQ(m2->nflexelem, 2);
+  EXPECT_EQ(m2->flex_matid[0], mat0_id);
+  EXPECT_EQ(m2->flex_matid[1], mat1_id);
+
+  // mjv_updateScene produces one mjGEOM_FLEX geom per unique material.
+  MjDataPtr d = MakeData(m);
+  mj_forward(m.get(), d.get());
+  mjvScene scn;
+  mjv_defaultScene(&scn);
+  mjv_makeScene(m.get(), &scn, 100);
+  mjvOption opt;
+  mjv_defaultOption(&opt);
+  mjvPerturb pert;
+  mjv_defaultPerturb(&pert);
+  mjvCamera cam;
+  mjv_defaultCamera(&cam);
+  mjv_updateScene(m.get(), d.get(), &opt, &pert, &cam, mjCAT_ALL, &scn);
+
+  int flex_geom_count = 0;
+  for (int i = 0; i < scn.ngeom; i++) {
+    if (scn.geoms[i].type == mjGEOM_FLEX) {
+      int k = scn.geoms[i].dataid;
+      ASSERT_GE(k, 0);
+      ASSERT_LT(k, 2);
+      EXPECT_FLOAT_EQ(scn.geoms[i].rgba[0], k == 0 ? 1.0f : 0.0f);
+      EXPECT_FLOAT_EQ(scn.geoms[i].rgba[1], k == 0 ? 0.0f : 1.0f);
+      EXPECT_GT(scn.geoms[i].size[2], 0.0f);
+      flex_geom_count++;
+    }
+  }
+  EXPECT_EQ(flex_geom_count, 2);
+  mjv_freeScene(&scn);
+
+  // Invalid material count != 0, 1, nelem fails to compile.
+  mjsFlex* flex = mjs_asFlex(mjs_findElement(spec.get(), mjOBJ_FLEX, "f"));
+  ASSERT_THAT(flex, NotNull());
+  mjs_setStringVec(flex->material, "mat0 mat1 mat0");
+  MjModelPtr bad(mj_compile(spec.get(), nullptr));
+  EXPECT_THAT(bad.get(), IsNull());
+  EXPECT_THAT(mjs_getError(spec.get()),
+              HasSubstr("material size must be 0, 1 or nelem"));
+}
+
+// Divergence-theorem + shifted-Legendre moment fitting reproduces exact
+// polynomial strain energy on oblique tetrahedral cut cells and thin slivers
+// that miss all subcell Gauss-Legendre points.
+TEST_F(UserFlexTest, FcmMomentFittingExactnessAndSubGaussSliver) {
+  constexpr double kAlphaMin = 1e-6;
+  constexpr double kE = 1e4;
+  constexpr double kNu = 0.25;
+  const double la = kE * kNu / ((1.0 + kNu) * (1.0 - 2.0 * kNu));
+  const double mu = kE / (2.0 * (1.0 + kNu));
+  const double c11 = la + 2.0 * mu;
+
+  // 1. Sub-Gauss-node thin sliver test (eta = 0.035 < first Gauss node s0 =
+  // 0.05635 for quadratic and s0 = 0.10566 for trilinear) and arbitrary cut
+  // fractions:
+  // - Under constant strain u_x(s) = s, the cell strain-energy ratio
+  //   (u^T K1 u) / (u^T K0 u) equals the exact volume fraction
+  //   eta + (1 - eta) * kAlphaMin to machine precision.
+  // - For trilinear elements on [0, 0.5] x [0, 1]^2, the trace ratio
+  //   trace(K1) / trace(K0) integrates sum_i phi_i(s)^2 = 1 - 2s + 2s^2 on
+  //   [0, eta], yielding the exact cubic polynomial
+  //   (7/6)*eta - (1/2)*eta^2 + (1/3)*eta^3.
+  for (double eta : {0.035, 0.17, 0.63}) {
+    for (const char* dof : {"trilinear", "quadratic"}) {
+      double x_cut = 0.5 + 0.5 * eta;
+      std::ostringstream ss;
+      ss << std::setprecision(17);
+      ss << "<mujoco><worldbody><body name='parent'>"
+         << "<inertial mass='1' pos='0 0 0' diaginertia='0.01 0.01 0.01'/>"
+         << "<flexcomp name='cut' type='direct' dim='3' dof='" << dof
+         << "' mass='1.0' cellcount='2 1 1' radius='0.001' point='"
+         << "0 0 0  0.5 0 0  0 1 0  0.5 1 0  0 0 1  0.5 0 1  0 1 1  0.5 1 1  "
+         << x_cut << " 0 0  " << x_cut << " 1 0  " << x_cut << " 0 1  " << x_cut
+         << " 1 1  1.0 0.5 0.5' "
+         << "element='0 1 2 4  3 2 1 7  5 1 4 7  6 2 4 7  1 2 4 7  "
+         << "1 8 3 5  9 3 8 11  10 8 5 11  7 3 5 11  8 3 5 11'>"
+         << "<contact selfcollide='none'/>"
+         << "<elasticity young='" << kE << "' poisson='" << kNu << "'/>"
+         << "</flexcomp></body></worldbody></mujoco>";
+
+      char error[1024] = {0};
+      MjModelPtr m =
+          LoadModelFromString(ss.str().c_str(), error, sizeof(error));
+      ASSERT_THAT(m.get(), NotNull()) << error;
+
+      int order = (std::string(dof) == "trilinear") ? 1 : 2;
+      int nbasis = order + 1;
+      int npe = nbasis * nbasis * nbasis;
+      int ndof = 3 * npe;
+      int block = ndof * ndof;
+      const mjtNum* K0 = m->flex_stiffness;
+      const mjtNum* K1 = m->flex_stiffness + block;
+
+      // Constant-strain displacement vector u_x(li, lj, lk) = li / order
+      std::vector<double> u_lin(ndof, 0.0);
+      int node_idx = 0;
+      for (int li = 0; li <= order; li++) {
+        for (int lj = 0; lj <= order; lj++) {
+          for (int lk = 0; lk <= order; lk++) {
+            u_lin[3 * node_idx + 0] = static_cast<double>(li) / order;
+            node_idx++;
+          }
+        }
+      }
+      double e0 = 0.0, e1 = 0.0;
+      double tr0 = 0.0, tr1 = 0.0;
+      for (int i = 0; i < ndof; i++) {
+        tr0 += std::abs(K0[i * ndof + i]);
+        tr1 += std::abs(K1[i * ndof + i]);
+        for (int j = 0; j < ndof; j++) {
+          e0 += -0.5 * u_lin[i] * K0[i * ndof + j] * u_lin[j];
+          e1 += -0.5 * u_lin[i] * K1[i * ndof + j] * u_lin[j];
+        }
+      }
+      double expected_vol_ratio = kAlphaMin + (1.0 - kAlphaMin) * eta;
+      EXPECT_NEAR(e1 / e0, expected_vol_ratio, MjTol(1e-11, 1e-5))
+          << "eta=" << eta << " dof=" << dof;
+
+      if (order == 1) {
+        double poly_trace =
+            (7.0 / 6.0) * eta - 0.5 * eta * eta + (1.0 / 3.0) * eta * eta * eta;
+        double expected_tr_ratio = kAlphaMin + (1.0 - kAlphaMin) * poly_trace;
+        EXPECT_NEAR(tr1 / tr0, expected_tr_ratio, MjTol(1e-11, 1e-5))
+            << "eta=" << eta;
+      }
+    }
+  }
+
+  // 2. Higher-order polynomial strain-energy exactness on an oblique corner
+  // tetrahedron T = conv{(0,0,0), (1,0,0), (0,1,0), (0,0,1)} inside [0, 1]^3
+  // (plus a tiny anchor tet at (1,1,1) to fix the [0,1]^3 bounding box).
+  // Under quadratic displacement u_x(x,y,z) = 0.5 * x^2, strain eps_xx = x, so
+  // strain energy density is 0.5 * (lambda + 2*mu) * x^2 (degree 2).
+  // Exact integral of x^2 over T is 2! / 5! = 1/60; over the tiny anchor tet of
+  // side delta = 1e-4 at x=1 it is ~ delta^3 / 6 = 1.67e-13 (negligible).
+  static constexpr char kObliqueTetXml[] = R"(
+  <mujoco>
+    <option gravity="0 0 0"/>
+    <worldbody>
+      <body name="parent">
+        <inertial mass="1" pos="0 0 0" diaginertia="0.01 0.01 0.01"/>
+        <flexcomp name="tet" type="direct" dim="3" dof="quadratic" mass="1.0"
+                  cellcount="1 1 1" radius="0.001"
+                  point="0 0 0  1 0 0  0 1 0  0 0 1
+                         1 1 1  0.9999 1 1  1 0.9999 1  1 1 0.9999"
+                  element="0 1 2 3  4 5 6 7">
+          <contact selfcollide="none" contype="0" conaffinity="0"/>
+          <elasticity young="1e4" poisson="0.25"/>
+        </flexcomp>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  char error[1024] = {0};
+  MjModelPtr m = LoadModelFromString(kObliqueTetXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  mj_kinematics(m.get(), d.get());
+
+  int parent_bid = mj_name2id(m.get(), mjOBJ_BODY, "parent");
+  for (int n = 0; n < m->flex_nodenum[0]; n++) {
+    int b = m->flex_nodebodyid[m->flex_nodeadr[0] + n];
+    if (b > parent_bid) {
+      double x = d->xpos[3 * b + 0];
+      int dof_adr = m->body_dofadr[b];
+      if (dof_adr >= 0) {
+        d->qpos[m->jnt_qposadr[m->dof_jntid[dof_adr + 0]]] = 0.5 * x * x;
+      }
+    }
+  }
+  mj_forward(m.get(), d.get());
+  double u_num = 0.0;
+  for (int i = 0; i < m->nv; i++) {
+    u_num += -0.5 * d->qpos[i] * d->qfrc_spring[i];
+  }
+  double int_x2_exact =
+      (1.0 - kAlphaMin) * (1.0 / 60.0) + kAlphaMin * (1.0 / 3.0);
+  double u_exact = 0.5 * c11 * int_x2_exact;
+  EXPECT_NEAR(u_num, u_exact, MjTol(1e-8 * u_exact, 1e-4 * u_exact));
+
+  // 3. Closed surface mesh that is not star-shaped with respect to its
+  // bounding-box center: a box [0,2]x[0,1]x[0,3] with the notch
+  // [1,2]x[0,1]x[1,2] removed (volume 5). The center (1, 0.5, 1.5) lies on the
+  // notch back wall x = 1, so the two back-wall triangles are coplanar with the
+  // virtual-cone origin and the cones have mixed orientation. Under uniform
+  // dilatation u = eps0 * x with nu = 0.25 the elastic energy is 3 E eps0^2 V,
+  // where V is the exact volume plus kAlphaMin times the fictitious volume of
+  // the six active cells (bounding box volume 6 minus the body).
+  static constexpr char kNotchedBoxPoints[] =
+      "0 0 0  2 0 0  2 0 1  1 0 1  1 0 2  2 0 2  2 0 3  0 0 3  0 0 2  0 0 1  "
+      "0 1 0  2 1 0  2 1 1  1 1 1  1 1 2  2 1 2  2 1 3  0 1 3  0 1 2  0 1 1";
+  static constexpr char kNotchedBoxTriangles[] =
+      "0 1 2  10 12 11  0 2 3  10 13 12  0 3 9  10 19 13  9 3 4  19 14 13  "
+      "9 4 8  19 18 14  7 8 4  17 14 18  7 4 5  17 15 14  7 5 6  17 16 15  "
+      "0 11 1  0 10 11  1 12 2  1 11 12  2 13 3  2 12 13  3 14 4  3 13 14  "
+      "4 15 5  4 14 15  5 16 6  5 15 16  6 17 7  6 16 17  7 18 8  7 17 18  "
+      "8 19 9  8 18 19  9 10 0  9 19 10";
+  constexpr double kEps0 = 0.01;
+  const double v_notched = 5.0;
+  const double v_fictitious = 6.0 - v_notched;
+  const double u_notched_exact =
+      3.0 * kE * kEps0 * kEps0 * (v_notched + kAlphaMin * v_fictitious);
+  for (const char* dof : {"trilinear", "quadratic"}) {
+    std::ostringstream ss;
+    ss << "<mujoco><option gravity='0 0 0'/><worldbody><body name='parent'>"
+       << "<inertial mass='1' pos='0 0 0' diaginertia='0.01 0.01 0.01'/>"
+       << "<flexcomp name='notched' type='direct' dim='2' dof='" << dof
+       << "' mass='1.0' cellcount='3 1 2' radius='0.001' point='"
+       << kNotchedBoxPoints << "' element='" << kNotchedBoxTriangles << "'>"
+       << "<contact selfcollide='none' contype='0' conaffinity='0'/>"
+       << "<elasticity young='" << kE << "' poisson='" << kNu << "'/>"
+       << "</flexcomp></body></worldbody></mujoco>";
+    MjModelPtr m_notched =
+        LoadModelFromString(ss.str().c_str(), error, sizeof(error));
+    ASSERT_THAT(m_notched.get(), NotNull()) << error;
+    MjDataPtr d_notched = MakeData(m_notched);
+    mj_kinematics(m_notched.get(), d_notched.get());
+
+    int parent = mj_name2id(m_notched.get(), mjOBJ_BODY, "parent");
+    for (int n = 0; n < m_notched->flex_nodenum[0]; n++) {
+      int b = m_notched->flex_nodebodyid[m_notched->flex_nodeadr[0] + n];
+      int dof_adr = m_notched->body_dofadr[b];
+      if (b > parent && dof_adr >= 0) {
+        for (int k = 0; k < 3; k++) {
+          int qadr = m_notched->jnt_qposadr[m_notched->dof_jntid[dof_adr + k]];
+          d_notched->qpos[qadr] = kEps0 * d_notched->xpos[3 * b + k];
+        }
+      }
+    }
+    mj_forward(m_notched.get(), d_notched.get());
+    double u_notched = 0.0;
+    for (int i = 0; i < m_notched->nv; i++) {
+      u_notched += -0.5 * d_notched->qpos[i] * d_notched->qfrc_spring[i];
+    }
+    EXPECT_NEAR(u_notched, u_notched_exact,
+                MjTol(1e-8 * u_notched_exact, 1e-4 * u_notched_exact))
+        << "dof=" << dof;
+  }
 }
 
 }  // namespace

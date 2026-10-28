@@ -5,6 +5,29 @@ Changelog
 Upcoming Version (not yet released)
 -----------------------------------
 
+General
+^^^^^^^
+.. admonition:: Breaking API changes
+   :class: attention
+
+   - Flexes now support per-element visual materials: ``mjModel.flex_matid`` is now ``(nflexelem x 1)`` instead of
+     ``(nflex x 1)``, and the ``material`` attribute on :ref:`flex<deformable-flex>` and :ref:`flexcomp<body-flexcomp>`
+     (``mjsFlex.material``) is now ``mjStringVec`` rather than ``mjString`` (accepting either a single material name
+     broadcast to all elements or one material name per element).
+
+     **Migration:** Index ``mjModel.flex_matid`` by element ``m->flex_elemadr[f] + e`` rather than by flex ``f``. In C,
+     set ``mjsFlex.material`` with ``mjs_setStringVec`` (or ``mjs_appendString``) instead of ``mjs_setString``; in
+     Python, assign a list of material names (e.g. ``flex.material = ['mat']``).
+
+   - Removed ``flexvert`` equality constraints (``<equality><flexvert>`` and ``<edge equality="vert"/>`` in
+     :ref:`flexcomp<body-flexcomp>`), along with the associated :ref:`mjModel` fields (``nJfv``, ``flex_vertedgeadr``,
+     ``flex_vertedgenum``, ``flex_vertedge``, ``flex_vertmetric``, ``flexvert_J_rownnz``, ``flexvert_J_rowadr``,
+     ``flexvert_J_colind``) and :ref:`mjData` fields (``flexvert_length``, ``flexvert_J``). ``mjEQ_FLEXVERT`` is
+     retained as an unsupported placeholder in :ref:`mjtEq` and causes an error if used.
+
+     **Migration:** Use continuum :ref:`elasticity<flex-elasticity>` with ``integrator="discrete"`` or
+     :ref:`edge equality<flexcomp-edge-equality>` for 2D cloth models.
+
 Engine
 ^^^^^^
 - Flex improvements:
@@ -38,6 +61,13 @@ Engine
 Python bindings
 ^^^^^^^^^^^^^^^
 - Removed support for Python 3.10, now that it's `deprecated upstream <https://devguide.python.org/versions>`__.
+
+Bug fixes
+^^^^^^^^^
+- :ref:`mj_setConst` now wakes all :ref:`sleeping<siSleep>` trees, since it recomputes their kinematics at ``qpos0`` and
+  ``qpos_spring``. Previously their cached poses could be left at ``qpos_spring``. It also no longer overwrites
+  ``cam_xpos``, ``cam_xmat``, ``light_xpos`` and ``light_xdir`` in :ref:`mjData`, which left static cameras and lights
+  with tracking or targeting at their fixed-mode poses.
 
 Version 3.17.0 (October 22, 2026)
 ---------------------------------
@@ -1484,9 +1514,9 @@ Significant new features
    :align: right
    :target: https://github.com/google-deepmind/mujoco/blob/main/model/flex/poncho.xml
 
-4. :commit:`7da271c6` Added new :ref:`flexvert<equality-flexvert>` equality constraints that enable cloth simulations
+4. :commit:`7da271c6` Added new ``flexvert`` equality constraints that enable cloth simulations
    with coarser meshes. This adds a new attribute value ``vert`` to flexcomp edge
-   :ref:`equality<flexcomp-edge-equality>` and the new equality type :ref:`flexvert<equality-flexvert>`. Uses the method
+   :ref:`equality<flexcomp-edge-equality>` and the new equality type ``flexvert``. Uses the method
    described in `Chen, Kry and Vouga, 2019 <https://arxiv.org/abs/1911.05204>`__.
 5. :commit:`0041fdcb` Added implicit integration support for deformable objects (flex) in ``implicit`` and
    ``implicitfast`` :ref:`integrators<geIntegration>`. This method extracts the flex degrees of freedom and solves them
