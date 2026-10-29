@@ -5,6 +5,17 @@ Changelog
 Upcoming Version (not yet released)
 -----------------------------------
 
+Significant new features
+^^^^^^^^^^^^^^^^^^^^^^^^
+.. image:: https://www.gstatic.com/mujoco/doc/images/changelog/wire.gif
+   :align: right
+   :width: 40%
+   :target: https://github.com/google-deepmind/mujoco/blob/main/model/plastic/wire.xml
+
+- Added ideal elasto-plasticity for joint (:ref:`springyield<body-joint-springyield>`) and tendon
+  (:ref:`spatial<tendon-spatial-springyield>`, :ref:`fixed<tendon-fixed-springyield>`) springs, with stateful plastic
+  spring references in ``mjData.plastic`` (``mjSTATE_PLASTIC``).
+
 General
 ^^^^^^^
 .. admonition:: Breaking API changes
@@ -27,6 +38,13 @@ General
 
      **Migration:** Use continuum :ref:`elasticity<flex-elasticity>` with ``integrator="discrete"`` or
      :ref:`edge equality<flexcomp-edge-equality>` for 2D cloth models.
+
+   - Unpinned :ref:`flexcomp<body-flexcomp>` models (with **full**, **trilinear**, or **quadratic**
+     :ref:`dofs<body-flexcomp-dof>`) now fail to compile if their parent or ancestor body has joints when no active
+     vertices or nodes are :ref:`pinned<flexcomp-pin>` to it.
+
+     **Migration:** Remove joints from the parent/ancestor body of an unpinned flex, or pin at least one vertex/node to
+     the parent body with :ref:`pin<flexcomp-pin>`.
 
 Engine
 ^^^^^^
@@ -57,6 +75,20 @@ Engine
 - Improved numerical stability of sphere and cylinder :ref:`spatial tendon<tendon-spatial>` :ref:`geom<spatial-geom>`
   wrapping at wrap onset. Thanks to :github:user:`M-Colley` for reporting and analyzing the issue in
   :doc:`MJWarp <mjwarp/index>` issue `1772 <https://github.com/google-deepmind/mujoco_warp/issues/1772>`__.
+- The ``RK4`` :ref:`integrator<option-integrator>` is now fourth-order accurate for the orientations of ball and free
+  joints. Previously, the angular velocities of the Runge-Kutta stages were combined without the Runge-Kutta-Munthe-Kaas
+  correction, so orientations converged only at second order. This changes the simulation of models with ball or free
+  joints that use ``RK4``.
+- Added ``surfacevel[3]`` to :ref:`mjContact`, storing the relative :ref:`surface velocity<body-geom-surfacevel>`
+  (``geom[1]`` minus ``geom[0]``) in the contact frame ``(tangent1, tangent2, spin)``. Collision detection populates it
+  from ``geom_surfacevel`` when ``mjModel.flg_surfacevel`` is set, and external contact generators can write it
+  directly (setting ``flg_surfacevel = 1`` if no geom specifies ``surfacevel``). Contact-point visualization now draws
+  a single relative tangential velocity arrow per active frictional contact.
+
+Filament Rendering
+^^^^^^^^^^^^^^^^^^
+- Added :ref:`mjrf_flush` (``mjrf.Context.flush`` in Python) to flush pending operations to the rendering backend and
+  invoke any completed callbacks.
 
 Python bindings
 ^^^^^^^^^^^^^^^
