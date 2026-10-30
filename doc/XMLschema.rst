@@ -191,6 +191,9 @@
             .. grid-item::
                :ref:`ipc<option-flag-ipc>`
 
+            .. grid-item::
+               :ref:`speculative<option-flag-speculative>`
+
 
    .. dropdown:: :ref:`compiler<compiler>` |*|
 
@@ -972,6 +975,9 @@
                :ref:`rgba<body-geom-rgba>`
 
             .. grid-item::
+               :ref:`castshadow<body-geom-castshadow>`
+
+            .. grid-item::
                :ref:`fluidshape<body-geom-fluidshape>`
 
             .. grid-item::
@@ -1590,6 +1596,9 @@
                   :ref:`thickness<flexcomp-elasticity-thickness>`
 
                .. grid-item::
+                  :ref:`yield<flexcomp-elasticity-yield>`
+
+               .. grid-item::
                   :ref:`elastic2d<flexcomp-elasticity-elastic2d>`
 
                .. grid-item::
@@ -1816,6 +1825,9 @@
 
                .. grid-item::
                   :ref:`thickness<flex-elasticity-thickness>`
+
+               .. grid-item::
+                  :ref:`yield<flex-elasticity-yield>`
 
                .. grid-item::
                   :ref:`elastic2d<flex-elasticity-elastic2d>`
@@ -5812,6 +5824,9 @@
 
             .. grid-item::
                :ref:`rgba<default-geom-rgba>`
+
+            .. grid-item::
+               :ref:`castshadow<default-geom-castshadow>`
 
             .. grid-item::
                :ref:`fluidshape<default-geom-fluidshape>`

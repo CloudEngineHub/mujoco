@@ -1477,7 +1477,7 @@ void mjXWriter::OneEquality(XMLElement* elem, const mjCEquality* pequality, mjCD
 void mjXWriter::OneTendon(XMLElement* elem, const mjCTendon* ptendon, mjCDef* def) {
   const mjCTendon* base   = ptendon;
   const mjsTendon* tendon = Values<mjsTendon>(ptendon);
-  bool             fixed  = (base->GetWrap(0) && base->GetWrap(0)->Type() == mjWRAP_JOINT);
+  bool             fixed  = (base->Type() == mjTENDON_FIXED);
 
   // regular
   if (!writingdefaults) {
@@ -2048,6 +2048,7 @@ void mjXWriter::Option(XMLElement* root) {
     WRITEENBL("sleep",          mjENBL_SLEEP)
     WRITEENBL("diagexact",      mjENBL_DIAGEXACT)
     WRITEENBL("ipc",            mjENBL_IPC)
+    WRITEENBL("speculative",    mjENBL_SPECULATIVE)
     // clang-format on
 #undef WRITEENBL
   }
@@ -2834,8 +2835,7 @@ void mjXWriter::Tendon(XMLElement* root) {
     if (!tendon->NumWraps()) {  // SHOULD NOT OCCUR
       continue;
     }
-    XMLElement* elem =
-        InsertEnd(section, tendon->GetWrap(0)->Type() == mjWRAP_JOINT ? "fixed" : "spatial");
+    XMLElement* elem = InsertEnd(section, tendon->Type() == mjTENDON_FIXED ? "fixed" : "spatial");
     OneTendon(elem, tendon, model->def_map[tendon->classname]);
 
     // write wraps

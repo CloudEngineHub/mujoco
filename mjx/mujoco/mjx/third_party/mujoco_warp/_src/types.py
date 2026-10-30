@@ -31,7 +31,44 @@ MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
 MJ_MINAWAKE = mujoco.mjMINAWAKE  # minimum number of timesteps before sleeping
 FLEX_STIFFNESS_3D = 24 if util_pkg.check_version("mujoco>=3.14.1.dev989511280") else 21
-ROD_HINGE_SIZE = 4  # 1D rod hinge data in flex_bending: [v_prev, v, v_next, k]
+
+
+def _rod_hinge_size() -> int:
+  """Size of a 1D rod bending record in flex_bending of the installed MuJoCo.
+
+  Records have 10 values since MuJoCo supports curved rod references: a single hinge
+  [v0, v1, v2, -1, k, 0, kb0, 0, 0, 0] or a hinge pair [v0, v1, v2, v3, w0, w1, om0 (4)], see
+  passive.rod_stencil; before, they were [v0, v1, v2, k]. The size is read from a compiled rod,
+  because the first MuJoCo build with the larger record is not known when this code is written.
+
+  Returns:
+    The record size, 4 or 10.
+
+  Raises:
+    NotImplementedError: If the installed MuJoCo uses another record size.
+  """
+  xml = """
+  <mujoco>
+    <worldbody>
+      <flexcomp name="rod" type="grid" count="3 1 1" spacing="1 1 1" radius="0.1" dim="1">
+        <elasticity young="1"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  """
+  try:
+    nflexbending = mujoco.MjModel.from_xml_string(xml).nflexbending
+  except ValueError:  # MuJoCo without 1D flex elasticity
+    return 4
+  # one hinge: nflexbending = 1 + record size, or 0 if 1D young is ignored
+  size = nflexbending - 1 if nflexbending else 4
+  if size not in (4, 10):
+    raise NotImplementedError(f"unsupported 1D rod record size {size} in flex_bending")
+  return size
+
+
+ROD_HINGE_SIZE = _rod_hinge_size()
+
 # maximum size (by number of edges) of an horizon in EPA algorithm
 MJ_MAX_EPAHORIZON = 24
 # maximum average number of trianglarfaces EPA can insert at each iteration
@@ -798,6 +835,19 @@ class EqType(enum.IntEnum):
   # unsupported: DISTANCE
 
 
+class TendonType(enum.IntEnum):
+  """Type of tendon.
+
+  Attributes:
+    FIXED: linear combination of joint coordinates
+    SPATIAL: path through sites, around geoms
+  """
+
+  # TODO(team): use mujoco.mjtTendon when mujoco>=3.17.1 is required
+  FIXED = 0
+  SPATIAL = 1
+
+
 class WrapType(enum.IntEnum):
   """Type of tendon wrapping object.
 
@@ -1371,6 +1421,7 @@ class Model:
     flex_stiffnessadr: stiffness matrix address              (nflex,)
     flex_elemedgeadr: first element edge id address          (nflex,)
     flex_bendingadr: first bending data address              (nflex,)
+    flex_plasticadr: start addr in plastic state (-1: none)  (nflex,)
     flex_shellnum: number of shells                          (nflex,)
     flex_shelldataadr: first shell data address              (nflex,)
     flex_nodebodyid: node body ids                           (nflexnode,)
@@ -1398,6 +1449,7 @@ class Model:
     efm0_L_colind: column indices in zero-mass flex factor   (nefm0L,)
     efm0_L: zero-mass flex Cholesky factor                   (nefm0L,)
     flex_damping: Rayleigh's damping coefficient             (nflex,)
+    flex_yield: plastic yield strain threshold (0: elastic)  (nflex,)
     flex_edgestiffness: edge stiffness                       (nflex,)
     flex_edgedamping: edge damping                           (nflex,)
     flex_edgeequality: edge equality type (0:none,1:edge,3:strain) (nflex,)
@@ -1460,6 +1512,7 @@ class Model:
     eq_solref: constraint solver reference                   (*, neq, mjNREF)
     eq_solimp: constraint solver impedance                   (*, neq, mjNIMP)
     eq_data: numeric data for constraint                     (*, neq, mjNEQDATA)
+    tendon_type: type of tendon (TendonType)                 (ntendon,)
     tendon_adr: address of first object in tendon's path     (ntendon,)
     tendon_num: number of objects in tendon's path           (ntendon,)
     tendon_actuatorid: actuator adding damping/armature      (ntendon,)
@@ -1706,7 +1759,7 @@ class Model:
     nflexface: number of interpolated flex shell faces
     flex_face_map: mapping of face index to flex and local element face indices
     flex_face: global node indices of each face                             (nflexface, 9)
-    nflexrodhinge: number of 1D rod bending hinges
+    nflexrodhinge: number of 1D rod bending hinges (single hinges or hinge pairs)
     flex_rodhinge_map: flex id and flex_bending address of each rod hinge   (nflexrodhinge, 2)
   """
 
@@ -1919,6 +1972,7 @@ class Model:
   flex_stiffnessadr: array("nflex", int)
   flex_elemedgeadr: array("nflex", int)
   flex_bendingadr: array("nflex", int)
+  flex_plasticadr: array("nflex", int)
   flex_shellnum: array("nflex", int)
   flex_shelldataadr: array("nflex", int)
   flex_nodebodyid: array("nflexnode", int)
@@ -1946,6 +2000,7 @@ class Model:
   efm0_L_colind: array("nefm0L", int)
   efm0_L: array("nefm0L", float)
   flex_damping: array("nflex", float)
+  flex_yield: array("nflex", float)
   flex_edgestiffness: array("nflex", float)
   flex_edgedamping: array("nflex", float)
   flex_edgeequality: array("nflex", int)
@@ -2008,6 +2063,7 @@ class Model:
   eq_solref: array("*", "neq", wp.vec2)
   eq_solimp: array("*", "neq", vec5)
   eq_data: array("*", "neq", vec12)
+  tendon_type: array("ntendon", int)
   tendon_adr: array("ntendon", int)
   tendon_num: array("ntendon", int)
   tendon_actuatorid: array("ntendon", int)

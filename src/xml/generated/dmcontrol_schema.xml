@@ -111,6 +111,7 @@
             <attribute name="sleep" type="keyword" valid_values="disable enable" default="disable"/>
             <attribute name="diagexact" type="keyword" valid_values="disable enable" default="disable"/>
             <attribute name="ipc" type="keyword" valid_values="disable enable" default="disable"/>
+            <attribute name="speculative" type="keyword" valid_values="disable enable" default="disable"/>
           </attributes>
         </element>
       </children>
@@ -365,6 +366,7 @@
                 <attribute name="mesh" type="reference" reference_namespace="mesh"/>
                 <attribute name="fitscale" type="float" default="1"/>
                 <attribute name="rgba" type="array" array_type="float" array_size="4" default="0.5 0.5 0.5 1"/>
+                <attribute name="castshadow" type="keyword" valid_values="false true" default="true"/>
                 <attribute name="fluidshape" type="keyword" valid_values="none ellipsoid"/>
                 <attribute name="fluidcoef" type="array" array_type="float" array_size="5" default="0.5 0.25 1.5 1 1"/>
                 <attribute name="user" type="array" array_type="float"/>
@@ -785,6 +787,7 @@
             <attribute name="mesh" type="reference" reference_namespace="mesh"/>
             <attribute name="fitscale" type="float" default="1"/>
             <attribute name="rgba" type="array" array_type="float" array_size="4" default="0.5 0.5 0.5 1"/>
+            <attribute name="castshadow" type="keyword" valid_values="false true" default="true"/>
             <attribute name="fluidshape" type="keyword" valid_values="none ellipsoid"/>
             <attribute name="fluidcoef" type="array" array_type="float" array_size="5" default="0.5 0.25 1.5 1 1"/>
             <attribute name="user" type="array" array_type="float"/>
@@ -1354,6 +1357,7 @@
                 <attribute name="mesh" type="reference" reference_namespace="mesh"/>
                 <attribute name="fitscale" type="float" default="1"/>
                 <attribute name="rgba" type="array" array_type="float" array_size="4" default="0.5 0.5 0.5 1"/>
+                <attribute name="castshadow" type="keyword" valid_values="false true" default="true"/>
                 <attribute name="fluidshape" type="keyword" valid_values="none ellipsoid"/>
                 <attribute name="fluidcoef" type="array" array_type="float" array_size="5" default="0.5 0.25 1.5 1 1"/>
                 <attribute name="user" type="array" array_type="float"/>
@@ -1598,6 +1602,7 @@
                     <attribute name="poisson" type="float"/>
                     <attribute name="damping" type="float"/>
                     <attribute name="thickness" type="float" default="-1"/>
+                    <attribute name="yield" type="float"/>
                     <attribute name="elastic2d" type="keyword" valid_values="none bend stretch both"/>
                     <attribute name="section" type="keyword" valid_values="circle box"/>
                     <attribute name="sectionsize" type="array" array_type="float" array_size="2"/>
@@ -1680,6 +1685,7 @@
             <attribute name="mesh" type="reference" reference_namespace="mesh"/>
             <attribute name="fitscale" type="float" default="1"/>
             <attribute name="rgba" type="array" array_type="float" array_size="4" default="0.5 0.5 0.5 1"/>
+            <attribute name="castshadow" type="keyword" valid_values="false true" default="true"/>
             <attribute name="fluidshape" type="keyword" valid_values="none ellipsoid"/>
             <attribute name="fluidcoef" type="array" array_type="float" array_size="5" default="0.5 0.25 1.5 1 1"/>
             <attribute name="user" type="array" array_type="float"/>
@@ -1910,6 +1916,7 @@
                 <attribute name="poisson" type="float"/>
                 <attribute name="damping" type="float"/>
                 <attribute name="thickness" type="float" default="-1"/>
+                <attribute name="yield" type="float"/>
                 <attribute name="elastic2d" type="keyword" valid_values="none bend stretch both"/>
                 <attribute name="section" type="keyword" valid_values="circle box"/>
                 <attribute name="sectionsize" type="array" array_type="float" array_size="2"/>
@@ -2009,6 +2016,7 @@
                 <attribute name="poisson" type="float"/>
                 <attribute name="damping" type="float"/>
                 <attribute name="thickness" type="float" default="-1"/>
+                <attribute name="yield" type="float"/>
                 <attribute name="elastic2d" type="keyword" valid_values="none bend stretch both"/>
                 <attribute name="section" type="keyword" valid_values="circle box"/>
                 <attribute name="sectionsize" type="array" array_type="float" array_size="2"/>

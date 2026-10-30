@@ -93,7 +93,7 @@ class EnableBit(enum.IntFlag):
   """
 
   INVDISCRETE = mujoco.mjtEnableBit.mjENBL_INVDISCRETE
-  # unsupported: OVERRIDE, ENERGY, FWDINV, ISLAND, DIAGEXACT
+  # unsupported: OVERRIDE, ENERGY, FWDINV, ISLAND, DIAGEXACT, SPECULATIVE
   SLEEP = mujoco.mjtEnableBit.mjENBL_SLEEP
   IPC = mujoco.mjtEnableBit.mjENBL_IPC
 
@@ -235,6 +235,18 @@ class EqType(enum.IntEnum):
   JOINT = mujoco.mjtEq.mjEQ_JOINT  # pyrefly: ignore[bad-assignment]
   TENDON = mujoco.mjtEq.mjEQ_TENDON  # pyrefly: ignore[bad-assignment]
   # unsupported: DISTANCE
+
+
+class TendonType(enum.IntEnum):
+  """Type of tendon.
+
+  Attributes:
+    FIXED: linear combination of joint coordinates
+    SPATIAL: path through sites, around geoms
+  """
+
+  FIXED = mujoco.mjtTendon.mjTENDON_FIXED  # pyrefly: ignore[bad-assignment]
+  SPATIAL = mujoco.mjtTendon.mjTENDON_SPATIAL  # pyrefly: ignore[bad-assignment]
 
 
 class WrapType(enum.IntEnum):
@@ -828,6 +840,7 @@ class Model(PyTreeNode):
   eq_solref: jax.Array
   eq_solimp: jax.Array
   eq_data: jax.Array
+  tendon_type: np.ndarray
   tendon_adr: np.ndarray
   tendon_num: np.ndarray
   tendon_limited: np.ndarray

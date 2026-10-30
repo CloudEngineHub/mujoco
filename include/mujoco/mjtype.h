@@ -88,8 +88,9 @@ typedef enum mjtEnableBit {       // enable optional feature bitflags
   mjENBL_SLEEP        = 1<<4,     // sleeping
   mjENBL_DIAGEXACT    = 1<<5,     // exact diagonal of constraint inertia
   mjENBL_IPC          = 1<<6,     // IPC flex contact mode of the discrete integrator
+  mjENBL_SPECULATIVE  = 1<<7,     // speculative contacts
 
-  mjNENABLE           = 7         // number of enable flags
+  mjNENABLE           = 8         // number of enable flags
 } mjtEnableBit;
 
 
@@ -221,6 +222,12 @@ typedef enum mjtEq {              // type of equality constraint
   mjEQ_FLEXSTRAIN,                // constrain strain of a trilinear/quadratic flex (B-bar)
   mjEQ_DISTANCE                   // unsupported, will cause an error if used
 } mjtEq;
+
+
+typedef enum mjtTendon {          // type of tendon
+  mjTENDON_FIXED      = 0,        // linear combination of joint coordinates
+  mjTENDON_SPATIAL                // path through sites, around geoms
+} mjtTendon;
 
 
 typedef enum mjtWrap {            // type of tendon wrap object
