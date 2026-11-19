@@ -1695,7 +1695,7 @@ std::string mjCBase::GetAssetContentType(std::string_view resource_name,
 // if the compiler settings ask for it; empty if there is no file
 std::string mjCBase::ResolvedSpecFile(const std::string& dir, std::string file) const {
   if (file.empty()) { return ""; }
-  if (model->spec.strippath) { file = mjuu_strippath(file); }
+  if (model->spec.strippath) { file = mjuu_stripLocalPath(file); }
   return ResolvePath(dir, file);
 }
 
@@ -5746,7 +5746,7 @@ void mjCHField::Compile(const mjVFS* vfs) {
     if (size[i] <= 0) throw mjCError(this, "size parameter is not positive in hfield");
 
   // remove path from file if necessary
-  if (model->strippath) { file_ = mjuu_strippath(file_); }
+  if (model->strippath) { file_ = mjuu_stripLocalPath(file_); }
 
   // load from file if specified
   if (!file_.empty()) {
@@ -6527,7 +6527,7 @@ void mjCTexture::LoadCubeSeparate(const mjVFS* vfs) {
   for (int i = 0; i < 6; i++) {
     if (!cubefiles_[i].empty()) {
       // remove path from file if necessary
-      if (model->strippath) { cubefiles_[i] = mjuu_strippath(cubefiles_[i]); }
+      if (model->strippath) { cubefiles_[i] = mjuu_stripLocalPath(cubefiles_[i]); }
 
       // make filename
       mujoco::user::FilePath texturedir_;
@@ -6711,7 +6711,7 @@ void mjCTexture::Compile(const mjVFS* vfs) {
   // single file
   else if (!file_.empty()) {
     // remove path from file if necessary
-    if (model->strippath) { file_ = mjuu_strippath(file_); }
+    if (model->strippath) { file_ = mjuu_stripLocalPath(file_); }
 
     // make filename
     FilePath filename = texturedir_ + FilePath(file_);
@@ -8909,25 +8909,41 @@ void mjCActuator::Compile(void) {
   }
 
   // DC motor: one activation per enabled state, as in mj_dcmotorSlots
-  if (dyntype == mjDYN_DCMOTOR && !plugin.active) {
-    int nslot =
-        (dynprm[7] > 0) + (gainprm[5] > 0) + (dynprm[2] > 0) + (dynprm[5] > 0) + (dynprm[0] > 0);
-    if (actdim < 0) {
-      actdim = nslot;
-    } else if (actdim != nslot) {
-      char msg[200];
-      mju::sprintf_arr(msg,
-                       "DC motor parameters in actuator '%s' (id = %d) require actdim %d, got %d",
-                       name.c_str(),
-                       id,
-                       nslot,
-                       actdim);
-      throw mjCError(this, "%s", msg);
-    }
-  }
+  int dcmotor_nslot =
+      (dynprm[7] > 0) + (gainprm[5] > 0) + (dynprm[2] > 0) + (dynprm[5] > 0) + (dynprm[0] > 0);
+  if (dyntype == mjDYN_DCMOTOR && !plugin.active && actdim < 0) { actdim = dcmotor_nslot; }
 
   // set actdim to 1 if it is unset and type is standard one-activation dyntype
   if (actdim < 0) { actdim = (dyntype != mjDYN_NONE); }
+
+  // the dynamics read their inputs without checks: an integrator has one activation per input,
+  // filter and muscle dynamics read the first input
+  if (dyntype == mjDYN_INTEGRATOR && actdim < ctrlnum_) {
+    throw mjCError(this,
+                   "integrator dynamics require one activation per input in actuator '%s' "
+                   "(id = %d)",
+                   name.c_str(),
+                   id);
+  }
+  if ((dyntype == mjDYN_FILTER || dyntype == mjDYN_FILTEREXACT || dyntype == mjDYN_MUSCLE) &&
+      ctrlnum_ < 1) {
+    throw mjCError(this,
+                   "filter and muscle dynamics require an input in actuator '%s' (id = %d)",
+                   name.c_str(),
+                   id);
+  }
+  if ((dyntype == mjDYN_DCMOTOR || gaintype == mjGAIN_DCMOTOR || biastype == mjBIAS_DCMOTOR) &&
+      !plugin.active &&
+      actdim != dcmotor_nslot) {
+    char msg[200];
+    mju::sprintf_arr(msg,
+                     "DC motor parameters in actuator '%s' (id = %d) require actdim %d, got %d",
+                     name.c_str(),
+                     id,
+                     dcmotor_nslot,
+                     actdim);
+    throw mjCError(this, "%s", msg);
+  }
 
   // DC motor always uses actearly
   if (dyntype == mjDYN_DCMOTOR && !actearly) {
