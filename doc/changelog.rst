@@ -43,6 +43,12 @@ Rendering
 - Fixed Filament planar reflections leaking geometry behind or crossing the mirror plane by clipping the reflection
   camera at the mirror plane with an oblique near-plane projection (:issue:`3902`).
 
+Python bindings
+^^^^^^^^^^^^^^^
+- Fixed a memory leak in ``mujoco-core`` (introduced in 4.0.0) where ``import mujoco`` without ``glfw`` installed
+  stored the ``ImportError`` in ``mujoco.rendering.classic.gl_context`` and kept every local variable on the importing
+  call stack alive for the life of the process (:issue:`3928`, reported by :github:user:`adenzler-nvidia`).
+
 Plugins
 ^^^^^^^
 - Added a first-party :ref:`resource provider<exProvider>` plugin, ``plugin/package_uri``, that serves ROS-style
@@ -50,6 +56,12 @@ Plugins
   ROS. It is not included in release packages: build it from source and load the resulting shared library with
   :ref:`mj_loadPluginLibrary` before parsing a model, so that URDF and MJCF files can reference ROS package assets
   unchanged. Contribution by :github:user:`noah-wardlow`.
+
+OpenUSD
+^^^^^^^
+- The native C++ :doc:`OpenUSD exporter <OpenUSD/exporting>` and ``LayerSink`` now author ``xformOp:translate``
+  (``double3``) and ``xformOp:orient`` (``quatd``) instead of ``xformOp:transform`` (``matrix4d``), avoiding shear
+  artifacts when USD or external renderers interpolate between time samples.
 
 Version 4.0.1 (November 11, 2026)
 ---------------------------------
