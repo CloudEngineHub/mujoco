@@ -20,7 +20,6 @@
 #include <optional>
 #include <string_view>
 
-#include <filament/Engine.h>
 #include <math/mat3.h>
 #include <math/vec3.h>
 #include <mujoco/mjmodel.h>
@@ -83,17 +82,6 @@ static std::optional<E> parse_enum(std::string_view name) {
     static_assert(std::is_same_v<E, void>, "Unsupported enum type");
   }
   return std::nullopt;
-}
-
-static const char* BackendName(filament::Engine::Backend backend) {
-  switch (backend) {
-    case filament::Engine::Backend::OPENGL:
-      return "opengl";
-    case filament::Engine::Backend::VULKAN:
-      return "vulkan";
-    default:
-      return "unknown";
-  }
 }
 
 // Helper class for reading values from mjModel custom fields.
@@ -162,6 +150,7 @@ void mjrf_defaultLightParams(mjrfLightParams* params) {
   params->softness = 0.0f;
   params->bulb_radius = 0.0f;
   params->shadow_map_size = 2048;
+  params->image_diffuse_scale = 1.0f;
 }
 
 void mjrf_defaultMaterial(mjrfMaterial* material) {
@@ -362,7 +351,7 @@ void mjrf_destroyContext(mjrfContext* ctx) {
 void mjrf_getRendererInfo(mjrfContext* ctx, mjrRendererInfo* info) {
   memset(info, 0, sizeof(mjrRendererInfo));
   info->renderer = "filament";
-  info->backend = ctx ? BackendName(mujoco::FilamentContext::downcast(ctx)->GetBackend()) : "";
+  info->backend = ctx ? mujoco::FilamentContext::downcast(ctx)->GetBackendName() : "";
 }
 
 mjrfTexture* mjrf_createTexture(mjrfContext* ctx,
