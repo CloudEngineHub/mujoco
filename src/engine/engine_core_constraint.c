@@ -26,7 +26,9 @@
 #include "engine/engine_inline.h"
 #include "engine/engine_core_util.h"
 #include "engine/engine_core_smooth.h"
+#include "engine/engine_crossplatform.h"
 #include "engine/engine_memory.h"
+#include "engine/engine_simd.h"
 #include "engine/engine_sleep.h"
 #include "engine/engine_util_blas.h"
 #include "engine/engine_util_errmem.h"
@@ -1535,6 +1537,112 @@ int mj_contactJacobian(const mjModel* m, mjData* d, const mjContact* con, int di
 }
 
 
+// return last DOF index of body's weld body, or -1 if static
+static inline int bodyLastDof(const mjModel* m, int body) {
+  int b = m->body_weldid[body];
+  return m->body_dofnum[b] ? m->body_dofadr[b] + m->body_dofnum[b] - 1 : -1;
+}
+
+
+// count nonzeros in one body's sparse ancestor DOF chain
+static inline int contactSideNnz(const mjModel* m, int body) {
+  // simple or world/static body: contiguous own DOFs only
+  if (m->body_simple[body]) {
+    return m->body_dofnum[body];
+  }
+
+  // walk ancestor DOFs to root
+  const int* dof_parentid = m->dof_parentid;
+  int da = bodyLastDof(m, body);
+  int n = 0;
+  while (da >= 0) {
+    da = dof_parentid[da];
+    n++;
+  }
+  return n;
+}
+
+
+// count nonzeros between two same-tree DOFs down to their LCA (outlined off cross-tree path)
+static mjNOINLINE int sameTreeNnz(const int* dof_parentid, int da1, int da2) {
+  int NV = 0;
+  while (da1 != da2) {
+    if (da2 > da1) {
+      da2 = dof_parentid[da2];
+    } else {
+      da1 = dof_parentid[da1];
+    }
+    NV++;
+  }
+  return NV;
+}
+
+
+// count nonzeros in the sparse DOF chain of a single-body-per-side contact
+static inline int contactPairNnz(const mjModel* m, int b1, int b2) {
+  // different kinematic trees (or one static side): chains are disjoint
+  if (m->body_treeid[b1] != m->body_treeid[b2]) {
+    return contactSideNnz(m, b1) + contactSideNnz(m, b2);
+  }
+
+  // same tree: walk ancestor chains until they meet at the lowest common ancestor
+  return sameTreeNnz(m->dof_parentid, bodyLastDof(m, b1), bodyLastDof(m, b2));
+}
+
+
+// rotate 3xNV Jacobian rows by the first nr (1..3) rows of 3x3 frame F: res = F[0:nr,:] * src
+static inline void rotateJac3(mjtNum* restrict res, const mjtNum F[9],
+                              const mjtNum* restrict src, int nr, int NV) {
+  const mjtNum* s0 = src;
+  const mjtNum* s1 = src + NV;
+  const mjtNum* s2 = src + 2*NV;
+
+  // 3-row fast path: read src once for all three frame rows
+  if (nr == 3) {
+    mjtNum* r0 = res;
+    mjtNum* r1 = res + NV;
+    mjtNum* r2 = res + 2*NV;
+    int c = 0;
+
+    // 4-wide SIMD: r_i[c..c+3] = F[3*i+0]*s0 + F[3*i+1]*s1 + F[3*i+2]*s2
+    for (; c+4 <= NV; c += 4) {
+      mjtNum4 v0 = v4_load(s0+c), v1 = v4_load(s1+c), v2 = v4_load(s2+c);
+      v4_store(r0+c, v4_lincomb3(v0, v1, v2, F[0], F[1], F[2]));
+      v4_store(r1+c, v4_lincomb3(v0, v1, v2, F[3], F[4], F[5]));
+      v4_store(r2+c, v4_lincomb3(v0, v1, v2, F[6], F[7], F[8]));
+    }
+
+    // scalar tail
+    for (; c < NV; c++) {
+      mjtNum v0 = s0[c], v1 = s1[c], v2 = s2[c];
+      r0[c] = F[0]*v0 + F[1]*v1 + F[2]*v2;
+      r1[c] = F[3]*v0 + F[4]*v1 + F[5]*v2;
+      r2[c] = F[6]*v0 + F[7]*v1 + F[8]*v2;
+    }
+  }
+
+  // 1- or 2-row path (dim == 1 or rotational rows for dim == 4)
+  else {
+    for (int r=0; r < nr; r++) {
+      mjtNum* rr = res + r*NV;
+      mjtNum f0 = F[3*r+0], f1 = F[3*r+1], f2 = F[3*r+2];
+      int c = 0;
+
+      // 4-wide SIMD: rr[c..c+3] = f0*s0 + f1*s1 + f2*s2
+      for (; c+4 <= NV; c += 4) {
+        mjtNum4 v0 = v4_load(s0+c), v1 = v4_load(s1+c), v2 = v4_load(s2+c);
+        v4_store(rr+c, v4_lincomb3(v0, v1, v2, f0, f1, f2));
+      }
+
+      // scalar tail
+      for (; c < NV; c++) {
+        rr[c] = f0*s0[c] + f1*s1[c] + f2*s2[c];
+      }
+    }
+  }
+}
+
+
 // dense single-body-per-side contact instantiation: fuse Jacobian walk, frame rotation, and cone
 static void instantiateContactDense(const mjModel* m, mjData* d, const mjContact* con,
                                     int conid, const int bid[2], int ispyramid) {
@@ -1720,9 +1828,9 @@ void mj_instantiateContact(const mjModel* m, mjData* d) {
     }
 
     // rotate Jacobian differences to contact frame
-    mju_mulMatMat(jac, con->frame, jacdifp, dim > 1 ? 3 : 1, 3, NV);
+    rotateJac3(jac, con->frame, jacdifp, dim > 1 ? 3 : 1, NV);
     if (dim > 3) {
-      mju_mulMatMat(jac + 3*NV, con->frame, jacdifr, dim-3, 3, NV);
+      rotateJac3(jac + 3*NV, con->frame, jacdifr, dim-3, NV);
     }
 
     // make frictionless contact
@@ -2820,8 +2928,8 @@ static int mj_nc(const mjModel* m, mjData* d, int* nnz) {
   // sleep filtering
   int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->ntree_awake < m->ntree;
 
-  mj_markStack(d);
-  int *chain = mjSTACKALLOC(d, m->nv, int);
+  int has_flex = m->nflex > 0;
+  int* chain = NULL;
 
   for (int i=0; i < ncon; i++) {
     mjContact* con = d->contact + i;
@@ -2829,19 +2937,21 @@ static int mj_nc(const mjModel* m, mjData* d, int* nnz) {
     // Passive path: flex-flex (including self-collision) and flex-vs-static-geometry, where every
     // dof is a metric-carried flex vertex so the Hessian is assembled in full. Flex-vs-moving-body
     // stays on the constraint solver. Passive if either flex asks for it.
-    {
+    if (has_flex) {
       int f0 = con->flex[0], f1 = con->flex[1];
       int wants = (f0 > -1 && mj_effFlexContactPossible(m, f0)) ||
                   (f1 > -1 && mj_effFlexContactPossible(m, f1));
-      int ok = (f0 > -1 && f1 > -1);   // flex-flex, or a flex with itself
-      for (int s = 0; s < 2 && !ok; s++) {
-        if (con->flex[s] < 0 && con->geom[s] > -1) {
-          ok = (m->body_weldid[m->geom_bodyid[con->geom[s]]] == 0);   // welded to the world
+      if (wants) {
+        int ok = (f0 > -1 && f1 > -1);   // flex-flex, or a flex with itself
+        for (int s = 0; s < 2 && !ok; s++) {
+          if (con->flex[s] < 0 && con->geom[s] > -1) {
+            ok = (m->body_weldid[m->geom_bodyid[con->geom[s]]] == 0);   // welded to the world
+          }
         }
-      }
-      if (wants && ok) {
-        con->efc_address = -1;
-        con->exclude = 4;
+        if (ok) {
+          con->efc_address = -1;
+          con->exclude = 4;
+        }
       }
     }
 
@@ -2881,8 +2991,7 @@ static int mj_nc(const mjModel* m, mjData* d, int* nnz) {
       int body[2];
       if (contactSingleBody(m, con, body)) {
         if (!noDofs(m, body, 2)) {
-          NV = mj_jacDifPair(m, NULL, chain, body[0], body[1], NULL, NULL,
-                             NULL, NULL, NULL, NULL, NULL, NULL, mj_isSparse(m), 1);
+          NV = contactPairNnz(m, body[0], body[1]);
         }
       }
 
@@ -2895,6 +3004,11 @@ static int mj_nc(const mjModel* m, mjData* d, int* nnz) {
 
         // count non-zeros in merged chain
         if (!noDofs(m, bid, nb)) {
+          // lazily allocate scratch chain for flex elements
+          if (!chain) {
+            mj_markStack(d);
+            chain = mjSTACKALLOC(d, m->nv, int);
+          }
           NV = mj_jacSumCount(m, d, chain, nb, bid);
         }
       }
@@ -2921,7 +3035,9 @@ static int mj_nc(const mjModel* m, mjData* d, int* nnz) {
     *nnz += nnzc;
   }
 
-  mj_freeStack(d);
+  if (chain) {
+    mj_freeStack(d);
+  }
   return nc;
 }
 
@@ -3602,6 +3718,560 @@ void mj_referenceConstraint(const mjModel* m, mjData* d) {
 
 //---------------------------- update constraint state ---------------------------------------------
 
+// compute 4-bit top (satisfied) and bottom (quadratic) zone masks for 4 elliptic contacts
+static inline void ellipticZoneMasks(mjtNum4 vmu, mjtNum4 vN, mjtNum4 vT,
+                                     int* top_bits, int* bot_bits) {
+  mjtNum4 vzero = v4_splat(0);
+  mjtMask4 m_tle0 = v4_cmple(vT, vzero);
+
+  // top zone: N >= mu*T || (T <= 0 && N >= 0)
+  mjtMask4 m_top = v4_or(v4_cmpge(vN, v4_mul(vmu, vT)),
+                         v4_and(m_tle0, v4_cmpge(vN, vzero)));
+
+  // bottom zone: !top && (mu*N + T <= 0 || (T <= 0 && N < 0))
+  mjtMask4 m_bot = v4_andnot(m_top,
+                             v4_or(v4_cmple(v4_add(v4_mul(vmu, vN), vT), vzero),
+                                   v4_and(m_tle0, v4_cmplt(vN, vzero))));
+  *top_bits = v4_movemask(m_top);
+  *bot_bits = v4_movemask(m_bot);
+}
+
+
+// satisfied update for n = 4*dim contiguous rows (all 4 contacts in top zone)
+static inline void updateEllipticAllTop(int i, int n, int* state, mjtNum* force) {
+  // zero force and replicate state in all cone dimensions
+  for (int k=0; k < n; k++) {
+    force[i+k] = 0;
+    state[i+k] = mjCNSTRSTATE_SATISFIED;
+  }
+}
+
+
+// quadratic update for n = 4*dim contiguous rows (all 4 contacts in bottom zone)
+static inline void updateEllipticAllBottom(int i, int n, const mjtNum* D,
+                                           const mjtNum* jar, int* state, mjtNum* force,
+                                           int flg_cost, mjtNum* s) {
+  // scalar equivalent: force[r] = -D[r]*jar[r], cost += 0.5*D[r]*jar[r]*jar[r]
+  if (flg_cost) {
+    mjtNum4 vhalf = v4_splat(0.5);
+    mjtNum acc = *s;
+    for (int k=0; k < n; k += 4) {
+      mjtNum4 vj = v4_load(jar+i+k);
+      mjtNum4 vd = v4_load(D+i+k);
+      v4_store(force+i+k, v4_mul(v4_xorsign(vd, 1, 1, 1, 1), vj));
+
+      // compute 4 cost terms in SIMD, accumulate sequentially to match scalar FP order
+      mjtNum c[4];
+      v4_store(c, v4_mul(v4_mul(v4_mul(vhalf, vd), vj), vj));
+      acc = (((acc + c[0]) + c[1]) + c[2]) + c[3];
+    }
+    *s = acc;
+  } else {
+    for (int k=0; k < n; k += 4) {
+      mjtNum4 vj = v4_load(jar+i+k);
+      mjtNum4 vd = v4_load(D+i+k);
+      v4_store(force+i+k, v4_mul(v4_xorsign(vd, 1, 1, 1, 1), vj));
+    }
+  }
+
+  // replicate state in all cone dimensions
+  for (int k=0; k < n; k++) {
+    state[i+k] = mjCNSTRSTATE_QUADRATIC;
+  }
+}
+
+
+// compute 4-wide middle-zone (cone) normal force and accumulate cost in scalar lane order
+static inline void ellipticConeNormal4(mjtNum4 vD0, mjtNum4 vmu, mjtNum4 vN, mjtNum4 vT,
+                                       int flg_cost, mjtNum4* vfn, mjtNum* s) {
+  // cost: 0.5*D0/(mu*mu*(1+mu*mu))*(N-mu*T)^2
+  mjtNum4 vmu2 = v4_mul(vmu, vmu);
+  mjtNum4 vDm = v4_div(vD0, v4_mul(vmu2, v4_add(v4_splat(1), vmu2)));
+  mjtNum4 vNmT = v4_sub(vN, v4_mul(vmu, vT));
+  if (flg_cost) {
+    mjtNum c[4];
+    v4_store(c, v4_mul(v4_mul(v4_mul(v4_splat(0.5), vDm), vNmT), vNmT));
+    *s = (((*s + c[0]) + c[1]) + c[2]) + c[3];
+  }
+
+  // force: - ds/djar = dU/djar * ds/dU  (dU/djar = diag(mu, friction))
+  *vfn = v4_mul(v4_mul(v4_xorsign(vDm, 1, 1, 1, 1), vNmT), vmu);
+}
+
+
+// scalar update for one elliptic contact with precomputed N, T, and tangent vector U
+static inline void updateEllipticLane(int r, int dim, const mjContact* con,
+                                      mjtNum N, mjtNum T, const mjtNum* U,
+                                      int is_top, int is_bot,
+                                      const mjtNum* D, const mjtNum* jar,
+                                      int* state, mjtNum* force, int flg_cost, mjtNum* s) {
+  int st;
+
+  // top zone
+  if (is_top) {
+    for (int k=0; k < dim; k++) {
+      force[r+k] = 0;
+    }
+    st = mjCNSTRSTATE_SATISFIED;
+  }
+
+  // bottom zone
+  else if (is_bot) {
+    for (int k=0; k < dim; k++) {
+      mjtNum jk = jar[r+k], dk = D[r+k];
+      force[r+k] = -dk*jk;
+      if (flg_cost) {
+        *s += (mjtNum)0.5*dk*jk*jk;
+      }
+    }
+    st = mjCNSTRSTATE_QUADRATIC;
+  }
+
+  // middle zone
+  else {
+    // cost: 0.5*D0/(mu*mu*(1+mu*mu))*(N-mu*T)^2
+    mjtNum mu = con->mu;
+    const mjtNum* friction = con->friction;
+    mjtNum Dm = D[r] / (mu*mu*(1 + mu*mu));
+    mjtNum NmT = N - mu*T;
+    if (flg_cost) {
+      *s += (mjtNum)0.5*Dm*NmT*NmT;
+    }
+
+    // force: - ds/djar = dU/djar * ds/dU  (dU/djar = diag(mu, friction))
+    // unit tangent vector: Uhat[k-1] = U[k-1] / T
+    mjtNum fn = -Dm*NmT*mu;
+    force[r] = fn;
+    for (int k=1; k < dim; k++) {
+      force[r+k] = -fn*(U[k-1] / T)*friction[k-1];
+    }
+    st = mjCNSTRSTATE_CONE;
+  }
+
+  // replicate state in all cone dimensions
+  for (int k=0; k < dim; k++) {
+    state[r+k] = st;
+  }
+}
+
+
+// 4-wide batched update for 4 contiguous dim=3 elliptic contacts
+static inline void updateEllipticBatch3(int i, const mjContact* c0, const mjContact* c1,
+                                        const mjContact* c2, const mjContact* c3,
+                                        const mjtNum* D, const mjtNum* jar,
+                                        int* state, mjtNum* force, int flg_cost, mjtNum* s) {
+  // load and deinterleave 4 contacts (normal + 2 tangents)
+  mjtNum4 vj0, vj1, vj2;
+  v4_load4x3(jar+i, &vj0, &vj1, &vj2);
+  mjtNum4 vf0 = v4_set(c0->friction[0], c1->friction[0], c2->friction[0], c3->friction[0]);
+  mjtNum4 vf1 = v4_set(c0->friction[1], c1->friction[1], c2->friction[1], c3->friction[1]);
+  mjtNum4 vmu = v4_set(c0->mu, c1->mu, c2->mu, c3->mu);
+
+  // map to regular dual cone space and decompose into normal N and tangent norm T
+  mjtNum4 vU1 = v4_mul(vj1, vf0);
+  mjtNum4 vU2 = v4_mul(vj2, vf1);
+  mjtNum4 vT = v4_sqrt(v4_add(v4_mul(vU1, vU1), v4_mul(vU2, vU2)));
+  mjtNum4 vN = v4_mul(vj0, vmu);
+
+  // classify all 4 contacts into top, bottom, or middle (cone) zones
+  int top_bits, bot_bits;
+  ellipticZoneMasks(vmu, vN, vT, &top_bits, &bot_bits);
+
+  // all 4 in top zone
+  if (top_bits == 15) {
+    updateEllipticAllTop(i, 12, state, force);
+    return;
+  }
+
+  // all 4 in bottom zone
+  if (bot_bits == 15) {
+    updateEllipticAllBottom(i, 12, D, jar, state, force, flg_cost, s);
+    return;
+  }
+
+  // all 4 in middle (cone) zone: 4-wide SIMD divisions
+  if ((top_bits | bot_bits) == 0) {
+    mjtNum4 vD0 = v4_set(D[i+0], D[i+3], D[i+6], D[i+9]);
+    mjtNum4 vfn;
+    ellipticConeNormal4(vD0, vmu, vN, vT, flg_cost, &vfn, s);
+
+    // unit tangent vector Uhat = U / T
+    // force: - ds/djar = dU/djar * ds/dU  (dU/djar = diag(mu, friction))
+    mjtNum4 vnegfn = v4_xorsign(vfn, 1, 1, 1, 1);
+    mjtNum4 vft0 = v4_mul(v4_mul(vnegfn, v4_div(vU1, vT)), vf0);
+    mjtNum4 vft1 = v4_mul(v4_mul(vnegfn, v4_div(vU2, vT)), vf1);
+
+    // store interleaved forces
+    mjtNum fn[4], ft0[4], ft1[4];
+    v4_store(fn, vfn);
+    v4_store(ft0, vft0);
+    v4_store(ft1, vft1);
+    for (int lane=0; lane < 4; lane++) {
+      int r = i + 3*lane;
+      force[r+0] = fn[lane];
+      force[r+1] = ft0[lane];
+      force[r+2] = ft1[lane];
+    }
+
+    // replicate state in all cone dimensions
+    for (int k=0; k < 12; k++) {
+      state[i+k] = mjCNSTRSTATE_CONE;
+    }
+    return;
+  }
+
+  // mixed zones: reuse 4-wide N, T, U1, U2
+  const mjContact* cons[4] = {c0, c1, c2, c3};
+  mjtNum N[4], T[4], U1[4], U2[4];
+  v4_store(N, vN);
+  v4_store(T, vT);
+  v4_store(U1, vU1);
+  v4_store(U2, vU2);
+
+  for (int lane=0; lane < 4; lane++) {
+    int bit = 1 << lane;
+    mjtNum u[2] = {U1[lane], U2[lane]};
+    updateEllipticLane(i + 3*lane, 3, cons[lane], N[lane], T[lane], u,
+                       top_bits & bit, bot_bits & bit, D, jar, state, force, flg_cost, s);
+  }
+}
+
+
+// 4-wide batched update for 4 contiguous dim=4 elliptic contacts
+static inline void updateEllipticBatch4(int i, const mjContact* c0, const mjContact* c1,
+                                        const mjContact* c2, const mjContact* c3,
+                                        const mjtNum* D, const mjtNum* jar,
+                                        int* state, mjtNum* force, int flg_cost, mjtNum* s) {
+  // load and transpose 4 contacts (normal + 3 tangents) into lane-major vectors
+  mjtNum4 vj0 = v4_load(jar+i+0);
+  mjtNum4 vj1 = v4_load(jar+i+4);
+  mjtNum4 vj2 = v4_load(jar+i+8);
+  mjtNum4 vj3 = v4_load(jar+i+12);
+  v4_transpose(&vj0, &vj1, &vj2, &vj3);
+
+  mjtNum4 vf0 = v4_load3(c0->friction);
+  mjtNum4 vf1 = v4_load3(c1->friction);
+  mjtNum4 vf2 = v4_load3(c2->friction);
+  mjtNum4 vf3 = v4_load3(c3->friction);
+  v4_transpose(&vf0, &vf1, &vf2, &vf3);
+  mjtNum4 vmu = v4_set(c0->mu, c1->mu, c2->mu, c3->mu);
+
+  // map to regular dual cone space and decompose into normal N and tangent norm T
+  mjtNum4 vU1 = v4_mul(vj1, vf0);
+  mjtNum4 vU2 = v4_mul(vj2, vf1);
+  mjtNum4 vU3 = v4_mul(vj3, vf2);
+  mjtNum4 vT = v4_sqrt(v4_add(v4_add(v4_mul(vU1, vU1), v4_mul(vU2, vU2)), v4_mul(vU3, vU3)));
+  mjtNum4 vN = v4_mul(vj0, vmu);
+
+  // classify all 4 contacts into top, bottom, or middle (cone) zones
+  int top_bits, bot_bits;
+  ellipticZoneMasks(vmu, vN, vT, &top_bits, &bot_bits);
+
+  // all 4 in top zone
+  if (top_bits == 15) {
+    updateEllipticAllTop(i, 16, state, force);
+    return;
+  }
+
+  // all 4 in bottom zone
+  if (bot_bits == 15) {
+    updateEllipticAllBottom(i, 16, D, jar, state, force, flg_cost, s);
+    return;
+  }
+
+  // all 4 in middle (cone) zone: 4-wide SIMD divisions + transpose store
+  if ((top_bits | bot_bits) == 0) {
+    mjtNum4 vD0 = v4_set(D[i+0], D[i+4], D[i+8], D[i+12]);
+    mjtNum4 vfn;
+    ellipticConeNormal4(vD0, vmu, vN, vT, flg_cost, &vfn, s);
+
+    // unit tangent vector Uhat = U / T
+    // force: - ds/djar = dU/djar * ds/dU  (dU/djar = diag(mu, friction))
+    mjtNum4 vnegfn = v4_xorsign(vfn, 1, 1, 1, 1);
+    mjtNum4 vft0 = v4_mul(v4_mul(vnegfn, v4_div(vU1, vT)), vf0);
+    mjtNum4 vft1 = v4_mul(v4_mul(vnegfn, v4_div(vU2, vT)), vf1);
+    mjtNum4 vft2 = v4_mul(v4_mul(vnegfn, v4_div(vU3, vT)), vf2);
+
+    // transpose back to per-contact order and store forces
+    v4_transpose(&vfn, &vft0, &vft1, &vft2);
+    v4_store(force+i+0, vfn);
+    v4_store(force+i+4, vft0);
+    v4_store(force+i+8, vft1);
+    v4_store(force+i+12, vft2);
+
+    // replicate state in all cone dimensions
+    for (int k=0; k < 16; k++) {
+      state[i+k] = mjCNSTRSTATE_CONE;
+    }
+    return;
+  }
+
+  // mixed zones: reuse 4-wide N, T, U1..U3
+  const mjContact* cons[4] = {c0, c1, c2, c3};
+  mjtNum N[4], T[4], U1[4], U2[4], U3[4];
+  v4_store(N, vN);
+  v4_store(T, vT);
+  v4_store(U1, vU1);
+  v4_store(U2, vU2);
+  v4_store(U3, vU3);
+
+  for (int lane=0; lane < 4; lane++) {
+    int bit = 1 << lane;
+    mjtNum u[3] = {U1[lane], U2[lane], U3[lane]};
+    updateEllipticLane(i + 4*lane, 4, cons[lane], N[lane], T[lane], u,
+                       top_bits & bit, bot_bits & bit, D, jar, state, force, flg_cost, s);
+  }
+}
+
+
+// 4-wide batched update for 4 contiguous dim=6 elliptic contacts
+static inline void updateEllipticBatch6(int i, const mjContact* c0, const mjContact* c1,
+                                        const mjContact* c2, const mjContact* c3,
+                                        const mjtNum* D, const mjtNum* jar,
+                                        int* state, mjtNum* force, int flg_cost, mjtNum* s) {
+  // load and transpose 4 contacts (normal + 5 tangents) into lane-major vectors
+  mjtNum4 vj0 = v4_load(jar+i+0);
+  mjtNum4 vj1 = v4_load(jar+i+6);
+  mjtNum4 vj2 = v4_load(jar+i+12);
+  mjtNum4 vj3 = v4_load(jar+i+18);
+  v4_transpose(&vj0, &vj1, &vj2, &vj3);
+  mjtNum4 vj4 = v4_set(jar[i+4], jar[i+10], jar[i+16], jar[i+22]);
+  mjtNum4 vj5 = v4_set(jar[i+5], jar[i+11], jar[i+17], jar[i+23]);
+
+  mjtNum4 vf0 = v4_load(c0->friction);
+  mjtNum4 vf1 = v4_load(c1->friction);
+  mjtNum4 vf2 = v4_load(c2->friction);
+  mjtNum4 vf3 = v4_load(c3->friction);
+  v4_transpose(&vf0, &vf1, &vf2, &vf3);
+  mjtNum4 vf4 = v4_set(c0->friction[4], c1->friction[4], c2->friction[4], c3->friction[4]);
+  mjtNum4 vmu = v4_set(c0->mu, c1->mu, c2->mu, c3->mu);
+
+  // map to regular dual cone space and decompose into normal N and tangent norm T
+  // match mju_norm(U+1, 5) fixed (l0+l2)+(l1+l3)+l4 reduction order
+  mjtNum4 vU1 = v4_mul(vj1, vf0);
+  mjtNum4 vU2 = v4_mul(vj2, vf1);
+  mjtNum4 vU3 = v4_mul(vj3, vf2);
+  mjtNum4 vU4 = v4_mul(vj4, vf3);
+  mjtNum4 vU5 = v4_mul(vj5, vf4);
+  mjtNum4 vTsqr = v4_add(v4_add(v4_mul(vU1, vU1), v4_mul(vU3, vU3)),
+                         v4_add(v4_mul(vU2, vU2), v4_mul(vU4, vU4)));
+  mjtNum4 vT = v4_sqrt(v4_add(vTsqr, v4_mul(vU5, vU5)));
+  mjtNum4 vN = v4_mul(vj0, vmu);
+
+  // classify all 4 contacts into top, bottom, or middle (cone) zones
+  int top_bits, bot_bits;
+  ellipticZoneMasks(vmu, vN, vT, &top_bits, &bot_bits);
+
+  // all 4 in top zone
+  if (top_bits == 15) {
+    updateEllipticAllTop(i, 24, state, force);
+    return;
+  }
+
+  // all 4 in bottom zone
+  if (bot_bits == 15) {
+    updateEllipticAllBottom(i, 24, D, jar, state, force, flg_cost, s);
+    return;
+  }
+
+  // all 4 in middle (cone) zone: 4-wide SIMD divisions
+  if ((top_bits | bot_bits) == 0) {
+    mjtNum4 vD0 = v4_set(D[i+0], D[i+6], D[i+12], D[i+18]);
+    mjtNum4 vfn;
+    ellipticConeNormal4(vD0, vmu, vN, vT, flg_cost, &vfn, s);
+
+    // unit tangent vector Uhat = U / T
+    // force: - ds/djar = dU/djar * ds/dU  (dU/djar = diag(mu, friction))
+    mjtNum4 vnegfn = v4_xorsign(vfn, 1, 1, 1, 1);
+    mjtNum4 vft0 = v4_mul(v4_mul(vnegfn, v4_div(vU1, vT)), vf0);
+    mjtNum4 vft1 = v4_mul(v4_mul(vnegfn, v4_div(vU2, vT)), vf1);
+    mjtNum4 vft2 = v4_mul(v4_mul(vnegfn, v4_div(vU3, vT)), vf2);
+    mjtNum4 vft3 = v4_mul(v4_mul(vnegfn, v4_div(vU4, vT)), vf3);
+    mjtNum4 vft4 = v4_mul(v4_mul(vnegfn, v4_div(vU5, vT)), vf4);
+
+    // transpose first 4 rows back to per-contact order and store all 6 rows per contact
+    mjtNum ft3[4], ft4[4];
+    v4_store(ft3, vft3);
+    v4_store(ft4, vft4);
+    v4_transpose(&vfn, &vft0, &vft1, &vft2);
+    v4_store(force+i+0, vfn);
+    force[i+4] = ft3[0];
+    force[i+5] = ft4[0];
+    v4_store(force+i+6, vft0);
+    force[i+10] = ft3[1];
+    force[i+11] = ft4[1];
+    v4_store(force+i+12, vft1);
+    force[i+16] = ft3[2];
+    force[i+17] = ft4[2];
+    v4_store(force+i+18, vft2);
+    force[i+22] = ft3[3];
+    force[i+23] = ft4[3];
+
+    // replicate state in all cone dimensions
+    for (int k=0; k < 24; k++) {
+      state[i+k] = mjCNSTRSTATE_CONE;
+    }
+    return;
+  }
+
+  // mixed zones: reuse 4-wide N, T, U1..U5
+  const mjContact* cons[4] = {c0, c1, c2, c3};
+  mjtNum N[4], T[4], U1[4], U2[4], U3[4], U4[4], U5[4];
+  v4_store(N, vN);
+  v4_store(T, vT);
+  v4_store(U1, vU1);
+  v4_store(U2, vU2);
+  v4_store(U3, vU3);
+  v4_store(U4, vU4);
+  v4_store(U5, vU5);
+
+  for (int lane=0; lane < 4; lane++) {
+    int bit = 1 << lane;
+    mjtNum u[5] = {U1[lane], U2[lane], U3[lane], U4[lane], U5[lane]};
+    updateEllipticLane(i + 6*lane, 6, cons[lane], N[lane], T[lane], u,
+                       top_bits & bit, bot_bits & bit, D, jar, state, force, flg_cost, s);
+  }
+}
+
+
+// check whether 4 contiguous elliptic contacts of dimension dim start at row i
+static inline int matchEllipticBatch4(int i, int nefc, int dim,
+                                      const int* type, const int* id,
+                                      const mjContact* contact, const mjContact* cons[4]) {
+  if (i + 4*dim > nefc ||
+      type[i+0*dim] != mjCNSTR_CONTACT_ELLIPTIC ||
+      type[i+1*dim] != mjCNSTR_CONTACT_ELLIPTIC ||
+      type[i+2*dim] != mjCNSTR_CONTACT_ELLIPTIC ||
+      type[i+3*dim] != mjCNSTR_CONTACT_ELLIPTIC) {
+    return 0;
+  }
+  cons[0] = contact + id[i+0*dim];
+  cons[1] = contact + id[i+1*dim];
+  cons[2] = contact + id[i+2*dim];
+  cons[3] = contact + id[i+3*dim];
+  return cons[0]->dim == dim && cons[1]->dim == dim &&
+         cons[2]->dim == dim && cons[3]->dim == dim;
+}
+
+
+// scalar update for a single elliptic contact (inline tangent norm, avoids mju_norm/mju_dot call)
+static inline void updateEllipticScalar(int i, const mjContact* con,
+                                        const mjtNum* D, const mjtNum* jar,
+                                        int* state, mjtNum* force, int flg_cost, mjtNum* s) {
+  // get contact parameters
+  mjtNum mu = con->mu;
+  const mjtNum* friction = con->friction;
+  int dim = con->dim;
+
+  // map to regular dual cone space and decompose into normal and tangent
+  mjtNum U[5];
+  mjtNum N = jar[i]*mu;
+  for (int j=1; j < dim; j++) {
+    U[j-1] = jar[i+j]*friction[j-1];
+  }
+
+  // match mju_norm(U, dim-1) reduction order bit-for-bit
+  mjtNum Tsqr;
+  if (dim == 3) {
+    Tsqr = U[0]*U[0] + U[1]*U[1];
+  } else if (dim == 4) {
+    Tsqr = (U[0]*U[0] + U[1]*U[1]) + U[2]*U[2];
+  } else if (dim == 6) {
+    Tsqr = ((U[0]*U[0] + U[2]*U[2]) + (U[1]*U[1] + U[3]*U[3])) + U[4]*U[4];
+  } else {
+    Tsqr = mju_dot(U, U, dim-1);
+  }
+  mjtNum T = mju_sqrt(Tsqr);
+
+  // classify zone and delegate to per-contact lane updater
+  int is_top = (N >= mu*T || (T <= 0 && N >= 0));
+  int is_bot = (!is_top && (mu*N + T <= 0 || (T <= 0 && N < 0)));
+  updateEllipticLane(i, dim, con, N, T, U, is_top, is_bot, D, jar, state, force, flg_cost, s);
+}
+
+
+// update contacts from first elliptic cone, outlined to avoid stack realignment in caller
+static mjNOINLINE mjtNum updateEllipticContacts(int start, int nefc,
+                                                const mjtNum* D, const mjtNum* jar,
+                                                const int* type, const int* id,
+                                                const mjContact* contact, int* state,
+                                                mjtNum* force, int flg_cost, mjtNum s) {
+  int i = start;
+  while (i < nefc) {
+    // non-negative constraint
+    if (type[i] != mjCNSTR_CONTACT_ELLIPTIC) {
+      // constraint is satisfied: no cost
+      if (jar[i] >= 0) {
+        force[i] = 0;
+        state[i] = mjCNSTRSTATE_SATISFIED;
+      }
+
+      // quadratic
+      else {
+        force[i] = -D[i]*jar[i];
+        if (flg_cost) {
+          s += 0.5*D[i]*jar[i]*jar[i];
+        }
+        state[i] = mjCNSTRSTATE_QUADRATIC;
+      }
+      i++;
+      continue;
+    }
+
+    // contact with elliptic cone: 4-wide batch by dim (3, 4, 6), else scalar
+    const mjContact* c0 = contact + id[i];
+    const mjContact* cons[4];
+    int dim = c0->dim;
+
+    if (dim == 3) {
+      // 4-wide batched path for contiguous dim=3 elliptic contacts
+      while (matchEllipticBatch4(i, nefc, 3, type, id, contact, cons)) {
+        updateEllipticBatch3(i, cons[0], cons[1], cons[2], cons[3],
+                             D, jar, state, force, flg_cost, &s);
+        i += 12;
+      }
+
+      // scalar tail for remaining contiguous dim=3 elliptic contacts
+      while (i < nefc && type[i] == mjCNSTR_CONTACT_ELLIPTIC && (contact + id[i])->dim == 3) {
+        updateEllipticScalar(i, contact + id[i], D, jar, state, force, flg_cost, &s);
+        i += 3;
+      }
+    } else if (dim == 4) {
+      // 4-wide batched path for contiguous dim=4 elliptic contacts
+      while (matchEllipticBatch4(i, nefc, 4, type, id, contact, cons)) {
+        updateEllipticBatch4(i, cons[0], cons[1], cons[2], cons[3],
+                             D, jar, state, force, flg_cost, &s);
+        i += 16;
+      }
+
+      // scalar tail for remaining contiguous dim=4 elliptic contacts
+      while (i < nefc && type[i] == mjCNSTR_CONTACT_ELLIPTIC && (contact + id[i])->dim == 4) {
+        updateEllipticScalar(i, contact + id[i], D, jar, state, force, flg_cost, &s);
+        i += 4;
+      }
+    } else if (dim == 6) {
+      // 4-wide batched path for contiguous dim=6 elliptic contacts
+      while (matchEllipticBatch4(i, nefc, 6, type, id, contact, cons)) {
+        updateEllipticBatch6(i, cons[0], cons[1], cons[2], cons[3],
+                             D, jar, state, force, flg_cost, &s);
+        i += 24;
+      }
+
+      // scalar tail for remaining contiguous dim=6 elliptic contacts
+      while (i < nefc && type[i] == mjCNSTR_CONTACT_ELLIPTIC && (contact + id[i])->dim == 6) {
+        updateEllipticScalar(i, contact + id[i], D, jar, state, force, flg_cost, &s);
+        i += 6;
+      }
+    } else {
+      // fallback scalar update for other elliptic dimensions
+      updateEllipticScalar(i, c0, D, jar, state, force, flg_cost, &s);
+      i += dim;
+    }
+  }
+  return s;
+}
+
+
 // compute efc_state, efc_force
 //  optional: cost(qacc) = s_hat(jar)
 void mj_constraintUpdate_impl(int ne, int nf, int nefc,
@@ -3696,183 +4366,9 @@ void mj_constraintUpdate_impl(int ne, int nf, int nefc,
     i++;
   }
 
-  // 4-wide batched path for contiguous dim=3 elliptic contacts
-  for (; i + 12 <= nefc; i += 12) {
-    if (type[i+0] != mjCNSTR_CONTACT_ELLIPTIC ||
-        type[i+3] != mjCNSTR_CONTACT_ELLIPTIC ||
-        type[i+6] != mjCNSTR_CONTACT_ELLIPTIC ||
-        type[i+9] != mjCNSTR_CONTACT_ELLIPTIC) {
-      break;
-    }
-    const mjContact* c0 = contact + id[i+0];
-    const mjContact* c1 = contact + id[i+3];
-    const mjContact* c2 = contact + id[i+6];
-    const mjContact* c3 = contact + id[i+9];
-    if (c0->dim != 3 || c1->dim != 3 || c2->dim != 3 || c3->dim != 3) {
-      break;
-    }
-
-    const mjContact* cons[4] = {c0, c1, c2, c3};
-    mjtNum U1[4], U2[4], Tsqr[4], T[4];
-    for (int lane=0; lane < 4; lane++) {
-      int r = i + 3*lane;
-      const mjtNum* fric = cons[lane]->friction;
-      U1[lane] = jar[r+1] * fric[0];
-      U2[lane] = jar[r+2] * fric[1];
-      Tsqr[lane] = U1[lane]*U1[lane] + U2[lane]*U2[lane];
-    }
-    for (int lane=0; lane < 4; lane++) {
-      T[lane] = mju_sqrt(Tsqr[lane]);
-    }
-
-    for (int lane=0; lane < 4; lane++) {
-      int r = i + 3*lane;
-      const mjContact* con = cons[lane];
-      mjtNum mu = con->mu;
-      mjtNum N = jar[r] * mu;
-      mjtNum Tl = T[lane];
-
-      // top zone
-      if (N >= mu*Tl || (Tl <= 0 && N >= 0)) {
-        force[r+0] = 0;
-        force[r+1] = 0;
-        force[r+2] = 0;
-        state[r+0] = mjCNSTRSTATE_SATISFIED;
-        state[r+1] = mjCNSTRSTATE_SATISFIED;
-        state[r+2] = mjCNSTRSTATE_SATISFIED;
-      }
-
-      // bottom zone
-      else if (mu*N + Tl <= 0 || (Tl <= 0 && N < 0)) {
-        mjtNum j0 = jar[r+0], j1 = jar[r+1], j2 = jar[r+2];
-        mjtNum d0 = D[r+0], d1 = D[r+1], d2 = D[r+2];
-        force[r+0] = -d0*j0;
-        force[r+1] = -d1*j1;
-        force[r+2] = -d2*j2;
-        if (cost) {
-          s += 0.5*d0*j0*j0;
-          s += 0.5*d1*j1*j1;
-          s += 0.5*d2*j2*j2;
-        }
-        state[r+0] = mjCNSTRSTATE_QUADRATIC;
-        state[r+1] = mjCNSTRSTATE_QUADRATIC;
-        state[r+2] = mjCNSTRSTATE_QUADRATIC;
-      }
-
-      // middle zone
-      else {
-        mjtNum f0 = con->friction[0], f1 = con->friction[1];
-        mjtNum Dm = D[r] / (mu*mu*(1 + mu*mu));
-        mjtNum NmT = N - mu*Tl;
-        if (cost) {
-          s += 0.5*Dm*NmT*NmT;
-        }
-        mjtNum u0 = U1[lane] / Tl;
-        mjtNum u1 = U2[lane] / Tl;
-        mjtNum fn = -Dm*NmT*mu;
-        force[r+0] = fn;
-        force[r+1] = -fn*u0*f0;
-        force[r+2] = -fn*u1*f1;
-        state[r+0] = mjCNSTRSTATE_CONE;
-        state[r+1] = mjCNSTRSTATE_CONE;
-        state[r+2] = mjCNSTRSTATE_CONE;
-      }
-    }
-  }
-
-  for (; i < nefc; i++) {
-
-    // non-negative constraint
-    if (type[i] != mjCNSTR_CONTACT_ELLIPTIC) {
-      // constraint is satisfied: no cost
-      if (jar[i] >= 0) {
-        force[i] = 0;
-
-        state[i] = mjCNSTRSTATE_SATISFIED;
-      }
-
-      // quadratic
-      else {
-        force[i] = -D[i]*jar[i];
-        if (cost) {
-          s += 0.5*D[i]*jar[i]*jar[i];
-        }
-        state[i] = mjCNSTRSTATE_QUADRATIC;
-      }
-    }
-
-    // contact with elliptic cone
-    else {
-      // get contact
-      const mjContact* con = contact + id[i];
-      mjtNum mu = con->mu;
-      const mjtNum* friction = con->friction;
-      int dim = con->dim;
-
-      // map to regular dual cone space
-      mjtNum U[6];
-      U[0] = jar[i]*mu;
-      for (int j=1; j < dim; j++) {
-        U[j] = jar[i+j]*friction[j-1];
-      }
-
-      // decompose into normal and tangent
-      mjtNum N = U[0];
-      mjtNum T = mju_norm(U+1, dim-1);
-
-      // top zone
-      if (N >= mu*T || (T <= 0 && N >= 0)) {
-        mju_zero(force+i, dim);
-        state[i] = mjCNSTRSTATE_SATISFIED;
-      }
-
-      // bottom zone
-      else if (mu*N+T <= 0 || (T <= 0 && N < 0)) {
-        for (int j=0; j < dim; j++) {
-          force[i+j] = -D[i+j]*jar[i+j];
-        }
-        if (cost) {
-          for (int j=0; j < dim; j++) {
-            s += 0.5*D[i+j]*jar[i+j]*jar[i+j];
-          }
-        }
-        state[i] = mjCNSTRSTATE_QUADRATIC;
-      }
-
-      // middle zone
-      else {
-        // cost: 0.5*D0/(mu*mu*(1+mu*mu))*(N-mu*T)^2
-        mjtNum Dm = D[i]/(mu*mu*(1+mu*mu));
-        mjtNum NmT = N - mu*T;
-
-        if (cost) {
-          s += 0.5*Dm*NmT*NmT;
-        }
-
-        // unit tangent vector
-        mjtNum Uhat[5];
-        for (int j=1; j < dim; j++) {
-          Uhat[j-1] = U[j] / T;
-        }
-
-        // force: - ds/djar = dU/djar * ds/dU  (dU/djar = diag(mu, friction))
-        force[i] = -Dm*NmT*mu;
-        for (int j=1; j < dim; j++) {
-          force[i+j] = -force[i]*Uhat[j-1]*friction[j-1];
-        }
-
-        // set state
-        state[i] = mjCNSTRSTATE_CONE;
-      }
-
-      // replicate state in all cone dimensions
-      for (int j=1; j < dim; j++) {
-        state[i+j] = state[i];
-      }
-
-      // advance to end of contact
-      i += (dim-1);
-    }
+  // contacts with elliptic cones (outlined to keep this function small)
+  if (i < nefc) {
+    s = updateEllipticContacts(i, nefc, D, jar, type, id, contact, state, force, cost != NULL, s);
   }
 
   // assign cost
